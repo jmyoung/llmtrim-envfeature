@@ -34,13 +34,14 @@ allow = [
     "OpenSSL",          # ring/aws-lc transitive, permissive
     "AGPL-3.0-only",    # our own crate
 ]
-# Per-crate license overrides for deps that ship a license file but no SPDX
-# expression (cargo-deny can't auto-detect). Add entries here only if a build
-# fails on a known-good crate — keep the list minimal and justified.
-# fuchsia-cprng (transitive, old rand chain) ships a LICENSE file but no SPDX id.
+# fuchsia-cprng (transitive via gaoya→random_choice→rand, fuchsia-target only) has no
+# `license` field in its manifest — only a BSD-3-Clause LICENSE file. Clarify keeps the
+# run warning-clean. The hash is XxHash32 of that LICENSE (cargo-deny's checksum); if the
+# crate version ever bumps, cargo-deny warns again and the hash must be recomputed.
 [[licenses.clarify]]
 name = "fuchsia-cprng"
 expression = "BSD-3-Clause"
+license-files = [{ path = "LICENSE", hash = 0xf04ece33 }]
 
 [bans]
 # Surface accidental duplicate-version bloat; warn, don't fail.

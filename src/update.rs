@@ -100,15 +100,14 @@ pub fn check(force: bool) -> Option<String> {
     if std::env::var_os("LLMTRIM_NO_UPDATE_CHECK").is_some() {
         return None;
     }
-    if !force {
-        if let Some(txt) = cache_path().and_then(|p| std::fs::read_to_string(p).ok()) {
-            if let Ok(c) = serde_json::from_str::<serde_json::Value>(&txt) {
-                let at = c.get("checked_at").and_then(|x| x.as_u64()).unwrap_or(0);
-                if now_secs().saturating_sub(at) < 86_400 {
-                    let latest = c.get("latest").and_then(|x| x.as_str()).unwrap_or("");
-                    return newer(latest);
-                }
-            }
+    if !force
+        && let Some(txt) = cache_path().and_then(|p| std::fs::read_to_string(p).ok())
+        && let Ok(c) = serde_json::from_str::<serde_json::Value>(&txt)
+    {
+        let at = c.get("checked_at").and_then(|x| x.as_u64()).unwrap_or(0);
+        if now_secs().saturating_sub(at) < 86_400 {
+            let latest = c.get("latest").and_then(|x| x.as_str()).unwrap_or("");
+            return newer(latest);
         }
     }
     // Cache the result either way — including "" on failure — so an offline box backs off

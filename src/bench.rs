@@ -200,13 +200,7 @@ fn last_number(s: &str) -> Option<f64> {
 /// gold (GSM8K gold is often `#### 72`). Tolerant to commas, units, and prose.
 fn numeric_exact(answer: &str, gold: &str) -> f64 {
     match (last_number(answer), last_number(gold)) {
-        (Some(a), Some(g)) => {
-            if (a - g).abs() <= 1e-6 * g.abs().max(1.0) {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        (Some(a), Some(g)) if (a - g).abs() <= 1e-6 * g.abs().max(1.0) => 1.0,
         _ => 0.0,
     }
 }

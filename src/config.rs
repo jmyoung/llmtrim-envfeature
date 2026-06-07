@@ -337,10 +337,10 @@ fn config_path() -> Option<PathBuf> {
 /// file. `None` when unset or ≤ 0 — age retention off, leaving only the row cap to bound the
 /// ledger. The key is ignored by the compression config (no `deny_unknown_fields`).
 pub fn retention_days() -> Option<i64> {
-    if let Ok(v) = std::env::var("LLMTRIM_RETENTION_DAYS") {
-        if let Ok(days) = v.trim().parse::<i64>() {
-            return (days > 0).then_some(days);
-        }
+    if let Ok(v) = std::env::var("LLMTRIM_RETENTION_DAYS")
+        && let Ok(days) = v.trim().parse::<i64>()
+    {
+        return (days > 0).then_some(days);
     }
     let path = config_path().filter(|p| p.exists())?;
     let text = std::fs::read_to_string(&path).ok()?;

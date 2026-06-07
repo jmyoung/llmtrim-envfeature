@@ -240,7 +240,7 @@ fn skeletonize_code(code: &str, cfg: &LangCfg) -> String {
     }
 
     // Splice from the back so earlier byte offsets stay valid.
-    bodies.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    bodies.sort_unstable_by_key(|b| std::cmp::Reverse(b.0));
     let mut out = code.to_string();
     for (start, end) in bodies {
         if start < end && end <= out.len() {

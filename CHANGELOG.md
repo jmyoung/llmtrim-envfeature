@@ -29,6 +29,11 @@ All notable changes to this project are documented here. The format follows
 - `llmtrim uninstall` — transparent one-command inverse: stop the daemon, disable
   autostart, strip the shell-profile block, remove the CA + state + binary (`--purge` also
   removes the savings ledger).
+- `llmtrim update` — channel-aware end-user updates: binary installs self-update via the
+  installer; cargo/Homebrew print their command. Crucially, `setup` now **stops the old
+  daemon before restarting**, so updates actually go live (a binary swap alone left the old
+  version serving). A cached (≤once/day), opt-out (`LLMTRIM_NO_UPDATE_CHECK`) release check
+  surfaces a "vX.Y available" notice in `monitor`.
 - Release scaffolding: `install.sh`, Homebrew formula, cross-platform release workflow, CI.
 
 ## [0.1.0] - Unreleased

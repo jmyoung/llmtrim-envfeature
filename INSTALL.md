@@ -65,6 +65,23 @@ llmtrim monitor   # savings dashboard (add --watch for a live view)
 llmtrim is purely a MITM proxy — it configures your **environment** (no IDE settings).
 See [the README](README.md#how-it-reaches-your-tools) for how it reaches your tools.
 
+## Update
+
+One command, channel-aware — it detects how llmtrim was installed and **restarts the daemon
+onto the new binary** (a binary swap alone leaves the old version running):
+
+```bash
+llmtrim update
+```
+
+- **Binary** (`curl | sh`): re-runs the installer to fetch the latest release, then restarts.
+- **Cargo / Homebrew**: prints the right command (`cargo install --git … --force` /
+  `brew upgrade llmtrim`), then run `llmtrim setup` to restart the daemon on it.
+
+`monitor` shows a one-line notice when a newer release exists (checked at most once a day,
+cached; set `LLMTRIM_NO_UPDATE_CHECK=1` to disable, and it's skipped offline). Pin a version
+in production and update promptly — security fixes land on the latest release (see SECURITY.md).
+
 ## Uninstall
 
 One command, fully transparent — the exact inverse of `setup`:

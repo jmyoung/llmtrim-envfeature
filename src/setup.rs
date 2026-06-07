@@ -48,7 +48,10 @@ pub fn run(port: u16) -> Result<()> {
         eprintln!("• Autostart not enabled: {e}");
     }
 
-    // 4. Start the interceptor now.
+    // 4. (Re)start the interceptor. Stop any existing daemon first so re-running `setup`
+    //    after an update actually goes live — otherwise the old process keeps serving the
+    //    old binary until a manual restart (the silent-stale-update trap).
+    let _ = crate::daemon::stop();
     match crate::daemon::spawn_detached(port) {
         Ok(pid) => println!("✓ Interceptor running (pid {pid}, port {port})."),
         Err(e) => eprintln!("• Daemon not started: {e}"),

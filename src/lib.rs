@@ -29,6 +29,7 @@ pub mod stages;
 pub mod tokenizer;
 pub mod tracking;
 pub mod transport;
+pub mod update;
 
 use gate::{PlanEntry, Transform};
 use ir::{ProviderKind, Request};

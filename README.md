@@ -140,6 +140,7 @@ The proxy needs **no API key** (it forwards your tool's own auth). The CA is gen
 llmtrim serve --daemon   # start the interceptor in the background (setup does this)
 llmtrim serve            # or foreground (Ctrl-C to stop)
 llmtrim stop             # stop the daemon
+llmtrim update           # update to the latest release + restart the daemon (channel-aware)
 llmtrim autostart        # run at login (--off to disable)
 llmtrim ca               # print the CA path + how to trust it system-wide (for GUI apps)
 llmtrim monitor --daily  # time-series report (--weekly/--monthly); --json/--csv to export

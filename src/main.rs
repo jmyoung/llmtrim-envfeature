@@ -79,6 +79,9 @@ enum Commands {
     },
     /// Stop the background interceptor daemon.
     Stop,
+    /// Update to the latest release (channel-aware: binary self-updates via the installer;
+    /// cargo/Homebrew print their command) and restart the daemon onto the new binary.
+    Update,
     /// Savings dashboard from the ledger + interceptor state. Default: a snapshot;
     /// `--watch` for a live view; `--daily/--weekly/--monthly` for time-series;
     /// `--json/--csv` to export. Aliased as `status` and `gain`.
@@ -287,6 +290,7 @@ fn main() -> Result<()> {
             }
             None => println!("No interceptor daemon was running."),
         },
+        Commands::Update => llmtrim::update::run()?,
         Commands::Monitor {
             watch,
             interval,
@@ -736,13 +740,14 @@ fn render_snapshot(tracker: &Tracker, color: bool) -> Result<String> {
     let models = model_views(tracker)?;
     let cost = monitor_cost(tracker);
     let daemon = daemon_view();
-    Ok(monitor::snapshot(
-        color,
-        Some(&daemon),
-        &summary,
-        &models,
-        cost.as_ref(),
-    ))
+    let mut out = monitor::snapshot(color, Some(&daemon), &summary, &models, cost.as_ref());
+    // Passive, cached (≤24h), opt-out update notice (LLMTRIM_NO_UPDATE_CHECK to disable).
+    if let Some(v) = llmtrim::update::check(false) {
+        out.push_str(&format!(
+            "\n  ↑ llmtrim v{v} available — run `llmtrim update`\n"
+        ));
+    }
+    Ok(out)
 }
 
 /// Live dashboard: clear + repaint each tick, with an input-token save-rate once we have

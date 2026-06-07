@@ -5,6 +5,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # rusqlite 0.40+ pulls libsqlite3-sys 0.38, whose build.rs uses the unstable
+      # cfg_select macro (rust#115585) — won't compile on stable. Held at 0.39 until
+      # cfg_select stabilizes or libsqlite3-sys drops it.
+      - dependency-name: "rusqlite"
+        versions: [">=0.40"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

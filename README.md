@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml"><img src="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL v3"></a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
   <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/fkiene/llmtrim/main/.github/badges/tests.json" alt="tests">
 </p>
 
@@ -272,7 +272,7 @@ Honesty is the product. The same A/B that proves the savings is the one that sur
 - **Anthropic / Gemini token counts are approximate** — no public exact tokenizer, so an o200k BPE proxy is used and flagged (`is_exact() == false`, surfaced in `gain`). OpenAI is exact (tiktoken).
 - **Output savings aren't measured live** — the proxy compresses the input prompt; an output *saving* needs the A/B counterfactual, which only the offline `bench` has. `status` shows captured output + total spend, but "saved" is input-side.
 - **The default is quality-gated, not lossless.** The bar is *cost with no measured quality regression* — so the shipped default (`auto`) runs lossy stages (output control everywhere; retrieval / skeleton / dedup per shape) wherever the [eval](bench/README.md) shows quality holds. The per-stage **token** gate guarantees fewer tokens, **not** quality — quality is proven offline and baked into the routing. Need a guaranteed byte-faithful round-trip? Use the **`safe`** preset (lossless only). When you raise a drop ratio yourself, read the frontier first.
-- **`rusqlite` is pinned to 0.31** — newer versions need the unstable `cfg_select` on stable Rust.
+- **`rusqlite` is held at 0.39** — 0.40+ pulls `libsqlite3-sys` 0.38, whose build script uses the still-unstable `cfg_select` ([rust#115585](https://github.com/rust-lang/rust/issues/115585)) and won't compile on stable Rust.
 
 ## License
 

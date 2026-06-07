@@ -16,7 +16,7 @@ anyhow = "1.0.102"
 async-openai = { version = "0.41.0", features = ["chat-completion", "byot"], optional = true }
 base64 = "0.22.1"
 bm25 = "2.3.2"
-chrono = "0.4.44"
+chrono = "0.4.45"
 clap = { version = "4.6.1", features = ["derive"] }
 csv = "1.4.0"
 dotenvy = "0.15.7"
@@ -31,7 +31,7 @@ statrs = "0.18.0"
 stop-words = "0.10.0"
 tiktoken-rs = "0.12.0"
 tiny_http = "0.12.0"
-tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "signal", "time"], optional = true }
+tokio = { version = "1.52", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "signal", "time"], optional = true }
 hudsucker = { version = "0.24", default-features = false, features = ["rcgen-ca", "rustls-client", "http2"], optional = true }
 async-trait = { version = "0.1", optional = true }
 http-body-util = { version = "0.1", optional = true }

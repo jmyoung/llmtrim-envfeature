@@ -312,6 +312,12 @@ mod imp {
             let mut parts = parts;
             // Length changed; drop it so hyper recomputes (and never streams a stale value).
             parts.headers.remove(header::CONTENT_LENGTH);
+            // When we'll tee + measure this response, force identity encoding so the body is
+            // readable SSE/JSON for the usage/text parse — we don't bundle a decompressor.
+            // Only when we actually compressed (`pending` set); passthroughs keep compression.
+            if self.pending.is_some() {
+                parts.headers.remove(header::ACCEPT_ENCODING);
+            }
             Request::from_parts(parts, new_body).into()
         }
 
@@ -445,10 +451,15 @@ mod imp {
                 .lock()
                 .map(|mut b| std::mem::take(&mut *b))
                 .unwrap_or_default();
-            let output_after = extract_output_text(p.provider, &buf).and_then(|text| {
-                crate::tokenizer::counter_for(p.provider, p.model.as_deref())
-                    .ok()
-                    .map(|c| c.count(&text) as i64)
+            // Prefer the provider's own output-token count (exact; includes tool-use and
+            // thinking output). Fall back to tokenizing the answer text only when no usage is
+            // present in the response.
+            let output_after = extract_output_usage(p.provider, &buf).or_else(|| {
+                extract_output_text(p.provider, &buf).and_then(|text| {
+                    crate::tokenizer::counter_for(p.provider, p.model.as_deref())
+                        .ok()
+                        .map(|c| c.count(&text) as i64)
+                })
             });
             let _ = self.ledger.send(record_from(p, output_after));
         }
@@ -477,6 +488,55 @@ mod imp {
             }
         }
         (!out.is_empty()).then_some(out)
+    }
+
+    /// The provider-reported output-token count from a captured response — exact, and includes
+    /// the tool-use / thinking output that re-tokenizing the visible text would miss. Reads the
+    /// `usage` of a non-streaming JSON body, or the streaming usage event (Anthropic
+    /// `message_delta`, OpenAI final chunk with `usage`, Gemini `usageMetadata`). `None` when no
+    /// usage is present, so the caller can fall back to tokenizing the answer text.
+    fn extract_output_usage(provider: ProviderKind, body: &[u8]) -> Option<i64> {
+        use serde_json::Value;
+        let text = std::str::from_utf8(body).ok()?;
+        // Pull the output-token field from one JSON event, wherever the provider puts it.
+        let from_value = |v: &Value| -> Option<i64> {
+            match provider {
+                ProviderKind::Anthropic => v
+                    .pointer("/usage/output_tokens")
+                    .or_else(|| v.pointer("/message/usage/output_tokens"))
+                    .and_then(Value::as_i64),
+                ProviderKind::OpenAi => v
+                    .pointer("/usage/completion_tokens")
+                    .and_then(Value::as_i64),
+                ProviderKind::Google => v
+                    .pointer("/usageMetadata/candidatesTokenCount")
+                    .and_then(Value::as_i64),
+            }
+        };
+        // Non-streaming JSON body.
+        if text.trim_start().starts_with('{')
+            && let Ok(v) = serde_json::from_str::<Value>(text.trim())
+        {
+            return from_value(&v);
+        }
+        // SSE: the final usage wins (Anthropic reports a partial count in `message_start` and
+        // the true total in `message_delta`), so take the max seen across events.
+        let mut best: Option<i64> = None;
+        for line in text.lines() {
+            let Some(data) = line.trim_start().strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(data)
+                && let Some(n) = from_value(&v)
+            {
+                best = Some(best.map_or(n, |b| b.max(n)));
+            }
+        }
+        best
     }
 
     /// The text delta in one SSE event, per provider's streaming shape.
@@ -748,6 +808,38 @@ mod imp {
                 an.pointer("/content/0/text")
                     .and_then(serde_json::Value::as_str),
                 Some("new")
+            );
+        }
+
+        #[test]
+        fn output_usage_reads_provider_counts() {
+            // Anthropic SSE: message_start has a partial count, message_delta the true total.
+            let anthropic_sse = concat!(
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":1}}}\n\n",
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}\n\n",
+            );
+            assert_eq!(
+                extract_output_usage(ProviderKind::Anthropic, anthropic_sse.as_bytes()),
+                Some(42)
+            );
+            // OpenAI streaming with include_usage: usage rides the final chunk.
+            let openai_sse =
+                "data: {\"choices\":[],\"usage\":{\"completion_tokens\":17}}\n\ndata: [DONE]\n\n";
+            assert_eq!(
+                extract_output_usage(ProviderKind::OpenAi, openai_sse.as_bytes()),
+                Some(17)
+            );
+            // Non-streaming JSON body (Gemini's usageMetadata).
+            let gemini_json = "{\"usageMetadata\":{\"candidatesTokenCount\":9}}";
+            assert_eq!(
+                extract_output_usage(ProviderKind::Google, gemini_json.as_bytes()),
+                Some(9)
+            );
+            // No usage present → None (caller falls back to tokenizing the text).
+            assert_eq!(
+                extract_output_usage(ProviderKind::Anthropic, b"data: {\"type\":\"ping\"}\n\n"),
+                None
             );
         }
 

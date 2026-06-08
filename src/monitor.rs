@@ -27,6 +27,23 @@ pub struct DaemonView {
 /// it as such.
 const BENCH_OUTPUT_REDUCTION: f64 = 0.73;
 
+/// Projected $ saved: measured input saving + the benchmark-estimated output saving. Compressed
+/// output is ~(1−r) of the un-instructed baseline, so the output saving is `out_spend · r/(1−r)`.
+fn projected_saved_usd(saved: f64, out_spend: f64) -> f64 {
+    saved + out_spend * BENCH_OUTPUT_REDUCTION / (1.0 - BENCH_OUTPUT_REDUCTION)
+}
+
+/// Projected round-trip %: projected saving over the projected un-compressed bill.
+fn projected_round_trip_pct(saved: f64, spend: f64, out_spend: f64) -> f64 {
+    let projected = projected_saved_usd(saved, out_spend);
+    let baseline = spend + projected;
+    if baseline > 0.0 {
+        projected / baseline * 100.0
+    } else {
+        0.0
+    }
+}
+
 /// USD cost saved + the compressed spend, priced via the provider registry. `saved`/`spend`
 /// are *measured*; the `projected_*` helpers add the benchmark-estimated output saving.
 #[derive(Clone, Copy)]
@@ -49,31 +66,25 @@ impl Cost {
         }
     }
 
-    /// Projected $ saved: measured input saving + the benchmark-estimated output saving.
-    /// Compressed output is ~(1−r) of the un-instructed baseline, so the saving is
-    /// `out_spend · r/(1−r)`.
     fn projected_saved(&self) -> f64 {
-        self.saved + self.out_spend * BENCH_OUTPUT_REDUCTION / (1.0 - BENCH_OUTPUT_REDUCTION)
+        projected_saved_usd(self.saved, self.out_spend)
     }
 
-    /// Projected round-trip %: projected saving over the projected un-compressed bill.
     fn projected_pct(&self) -> f64 {
-        let saved = self.projected_saved();
-        let baseline = self.spend + saved;
-        if baseline > 0.0 {
-            saved / baseline * 100.0
-        } else {
-            0.0
-        }
+        projected_round_trip_pct(self.saved, self.spend, self.out_spend)
     }
 }
 
-/// One per-model row in the breakdown table.
+/// One per-model row in the breakdown table. `cost_saved`/`spend`/`out_spend` are the measured
+/// USD figures (present when the registry prices the model), used to project the per-model
+/// round-trip the same way the hero does.
 pub struct ModelView {
     pub name: String,
     pub events: i64,
     pub saved_pct: f64,
     pub cost_saved: Option<f64>,
+    pub spend: Option<f64>,
+    pub out_spend: Option<f64>,
 }
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────────
@@ -249,16 +260,25 @@ pub fn snapshot(
     if !models.is_empty() {
         o.push_str(&paint(color, DIM, "\n by model\n"));
         for m in models {
-            let cost_col = m
-                .cost_saved
+            // Projected round-trip per model when the registry prices it (matches the hero);
+            // otherwise the measured input %. The `~` marks the projection.
+            let (pct, mark, dollars) = match (m.cost_saved, m.spend, m.out_spend) {
+                (Some(saved), Some(spend), Some(out_spend)) => (
+                    projected_round_trip_pct(saved, spend, out_spend),
+                    "~",
+                    Some(projected_saved_usd(saved, out_spend)),
+                ),
+                _ => (m.saved_pct, "", m.cost_saved),
+            };
+            let cost_col = dollars
                 .map(|c| format!("  {}", paint(color, GREEN, &format!("${c:.2}"))))
                 .unwrap_or_default();
-            let pct_col = if m.saved_pct >= 0.0 { GREEN } else { YELLOW };
+            let pct_col = if pct >= 0.0 { GREEN } else { YELLOW };
             o.push_str(&format!(
                 "   {:<22} {:>6}  {}{}\n",
                 truncate(&m.name, 22),
                 commas(m.events),
-                paint(color, pct_col, &format!("{:+.0}%", -m.saved_pct)),
+                paint(color, pct_col, &format!("{mark}{:+.0}%", -pct)),
                 cost_col,
             ));
         }
@@ -483,6 +503,8 @@ mod tests {
             events: 420,
             saved_pct: 61.0,
             cost_saved: Some(4.10),
+            spend: Some(6.0),
+            out_spend: Some(0.0),
         }];
         let out = snapshot(false, None, &summ(), &models, Some(&cost));
         assert!(out.contains("$12.47 saved"), "hero cost");

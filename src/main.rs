@@ -667,10 +667,16 @@ fn model_views(tracker: &Tracker) -> Result<Vec<monitor::ModelView>> {
         .into_iter()
         .filter(|m| m.events > 0)
         .map(|m| {
-            let cost_saved =
-                m.model.as_deref().and_then(llm_prices).map(|(inp, _)| {
-                    (m.input_before - m.input_after).max(0) as f64 / 1_000_000.0 * inp
-                });
+            // Per-model USD figures where the registry prices the model — used to project the
+            // round-trip the same way the hero does.
+            let priced = m.model.as_deref().and_then(llm_prices);
+            let cost_saved = priced
+                .map(|(inp, _)| (m.input_before - m.input_after).max(0) as f64 / 1_000_000.0 * inp);
+            let out_spend = priced.map(|(_, outp)| m.output_after as f64 / 1_000_000.0 * outp);
+            let spend = priced.map(|(inp, outp)| {
+                m.input_after as f64 / 1_000_000.0 * inp
+                    + m.output_after as f64 / 1_000_000.0 * outp
+            });
             monitor::ModelView {
                 name: m
                     .model
@@ -678,6 +684,8 @@ fn model_views(tracker: &Tracker) -> Result<Vec<monitor::ModelView>> {
                 events: m.events,
                 saved_pct: saved_pct(m.input_before as f64, m.input_after as f64),
                 cost_saved,
+                spend,
+                out_spend,
             }
         })
         .collect();

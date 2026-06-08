@@ -28,7 +28,7 @@
 
 ---
 
-A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provider, answers unchanged, no model in the loop, ~0.1 ms overhead.**
+A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provider, answers unchanged, no model in the loop.**
 
 ## 💸 −46% of the bill - measured live, not estimated
 

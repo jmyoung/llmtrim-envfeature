@@ -66,6 +66,30 @@ mod imp {
             set
         });
 
+    /// Reputable direct LLM API hosts beyond the `llm_providers` registry that speak one of
+    /// the three wire shapes we adapt (OpenAI / Anthropic / Gemini). Interception + CA coverage
+    /// only — the wire format is detected from the body, never assumed from the host. Kept small
+    /// on purpose: each entry widens what the name-constrained MITM CA may forge.
+    static EXTRA_HOSTS: &[&str] = &[
+        "opencode.ai", // opencode zen gateway (OpenAI shape)
+        "api.groq.com",
+        "api.together.xyz",
+        "api.fireworks.ai",
+        "api.deepinfra.com",
+        "api.perplexity.ai",
+        "api.sambanova.ai",
+        "inference.baseten.co",
+        "api.studio.nebius.ai",
+        "ai-gateway.vercel.sh",
+    ];
+
+    /// True if `host` is one of `EXTRA_HOSTS` (exact, or a subdomain of one).
+    fn is_extra_host(host: &str) -> bool {
+        EXTRA_HOSTS
+            .iter()
+            .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+    }
+
     /// Host component of a URL like `https://api.openai.com/v1` → `api.openai.com`.
     fn host_of_url(url: &str) -> Option<&str> {
         let after = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -96,9 +120,13 @@ mod imp {
         {
             return Some(ProviderKind::Google);
         }
-        LLM_DOMAINS
-            .contains(&parent_domain(&h))
-            .then_some(ProviderKind::OpenAi)
+        // Registry domains and the curated extra hosts default to the OpenAI shape; the exact
+        // adapter is refined from the body at compress time (`provider::detect`), so a host that
+        // serves a Claude- or Gemini-shaped body is still handled correctly.
+        if LLM_DOMAINS.contains(&parent_domain(&h)) || is_extra_host(&h) {
+            return Some(ProviderKind::OpenAi);
+        }
+        None
     }
 
     /// True if the request carries an AWS SigV4 signature (its body is signed, so we must
@@ -431,8 +459,15 @@ mod imp {
         if !text.trim_start().starts_with('{') {
             return None;
         }
+        // Pick the adapter from the body shape, falling back to the host-derived kind. A host
+        // that serves more than one wire shape (Anthropic- and OpenAI-compatible paths on the
+        // same domain) is then adapted by what the body actually is, not the host guess.
+        let kind = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| crate::provider::detect(&v))
+            .unwrap_or(provider);
         let started = std::time::Instant::now();
-        let result = crate::compress_with_config(text, Some(provider), config).ok()?;
+        let result = crate::compress_with_config(text, Some(kind), config).ok()?;
         let compress_micros = started.elapsed().as_micros() as i64;
         // Never forward a request larger than we received. On tiny or non-chat bodies (e.g.
         // token-count / auxiliary calls) the input-side stages can't offset the output-control
@@ -823,6 +858,11 @@ mod imp {
             permitted_subtrees: LLM_DOMAINS
                 .iter()
                 .map(|d| GeneralSubtree::DnsName(d.clone()))
+                .chain(
+                    EXTRA_HOSTS
+                        .iter()
+                        .map(|h| GeneralSubtree::DnsName((*h).to_string())),
+                )
                 .collect(),
             excluded_subtrees: vec![],
         });
@@ -966,9 +1006,35 @@ mod imp {
                 provider_for_host("openrouter.ai"),
                 Some(ProviderKind::OpenAi)
             );
+            // Curated extra hosts intercept too; the exact wire shape is refined from the body
+            // at compress time, so the host-level kind is just the OpenAI-shaped default.
+            assert_eq!(provider_for_host("opencode.ai"), Some(ProviderKind::OpenAi));
+            assert_eq!(
+                provider_for_host("api.groq.com"),
+                Some(ProviderKind::OpenAi)
+            );
+            assert_eq!(
+                provider_for_host("ai-gateway.vercel.sh"),
+                Some(ProviderKind::OpenAi)
+            );
             // Non-LLM hosts are not intercepted.
             assert_eq!(provider_for_host("github.com"), None);
             assert_eq!(provider_for_host("example.com"), None);
+        }
+
+        #[test]
+        fn body_shape_picks_adapter_regardless_of_host() {
+            // A Claude-shaped body (top-level `system`) detects as Anthropic even though it
+            // arrived on a generic gateway host — the interceptor adapts by shape, not host.
+            let claude_body = serde_json::json!({
+                "model": "glm-4.6",
+                "system": "you are a helpful assistant",
+                "messages": [{"role": "user", "content": "hi"}],
+            });
+            assert_eq!(
+                crate::provider::detect(&claude_body),
+                Some(ProviderKind::Anthropic)
+            );
         }
 
         #[test]

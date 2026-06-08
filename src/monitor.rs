@@ -63,14 +63,17 @@ fn paint(color: bool, code: &str, s: &str) -> String {
     }
 }
 
-/// A `width`-cell bar for `pct` (0–100, clamped). Negative pct (savings turned to growth)
-/// renders empty — the sign is shown in the adjacent label, not the bar.
-fn bar(pct: f64, width: usize) -> String {
-    let filled = ((pct.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
-    let mut s = String::with_capacity(width * 3);
-    s.push_str(&"█".repeat(filled));
-    s.push_str(&"░".repeat(width.saturating_sub(filled)));
-    s
+/// A `width`-cell depletion bar for a `saved` percentage (0–100, clamped): the kept portion
+/// is filled + dim (what you still pay), the saved tail is dotted + green (what was cut), so
+/// the green dots line up with the green savings label. ≥100 → all dots, ≤0 → all filled.
+fn bar(color: bool, saved: f64, width: usize) -> String {
+    let cut = ((saved.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    let kept = width.saturating_sub(cut);
+    format!(
+        "{}{}",
+        paint(color, DIM, &"█".repeat(kept)),
+        paint(color, GREEN, &"░".repeat(cut)),
+    )
 }
 
 /// Compact human token count: 1_234_567 → "1.2M", 12_345 → "12.3K".
@@ -112,7 +115,7 @@ fn axis(color: bool, name: &str, before: i64, after: i64) -> String {
     format!(
         "  {:<7} {} {:>6}   {} → {}",
         name,
-        paint(color, GREEN, &bar(pct, 22)),
+        bar(color, pct, 22),
         paint(color, pct_col, &pct_str),
         human(before),
         human(after),
@@ -214,11 +217,12 @@ pub fn snapshot(
                 .cost_saved
                 .map(|c| format!("  {}", paint(color, GREEN, &format!("${c:.2}"))))
                 .unwrap_or_default();
+            let pct_col = if m.saved_pct >= 0.0 { GREEN } else { YELLOW };
             o.push_str(&format!(
                 "   {:<22} {:>6}  {}{}\n",
                 truncate(&m.name, 22),
                 commas(m.events),
-                paint(color, GREEN, &format!("-{:.0}%", m.saved_pct)),
+                paint(color, pct_col, &format!("{:+.0}%", -m.saved_pct)),
                 cost_col,
             ));
         }
@@ -404,9 +408,11 @@ mod tests {
 
     #[test]
     fn bar_clamps_and_fills() {
-        assert_eq!(bar(50.0, 10), "█████░░░░░");
-        assert_eq!(bar(150.0, 4), "████");
-        assert_eq!(bar(-20.0, 4), "░░░░");
+        assert_eq!(bar(false, 50.0, 10), "█████░░░░░"); // 50% saved: 5 kept, 5 cut
+        assert_eq!(bar(false, 0.0, 4), "████"); // nothing saved → all filled
+        assert_eq!(bar(false, 100.0, 4), "░░░░"); // all saved → all dotted
+        assert_eq!(bar(false, 150.0, 4), "░░░░"); // clamp high → all dotted
+        assert_eq!(bar(false, -20.0, 4), "████"); // clamp low → all filled
     }
 
     #[test]

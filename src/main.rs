@@ -706,7 +706,11 @@ fn run_watch(tracker: &Tracker, interval: u64) -> Result<()> {
         frame.push_str(&render_snapshot(tracker, color)?);
         if let Some(p) = prev {
             let rate = (summary.saved() - p) as f64 / interval as f64;
-            frame.push_str(&format!("\n  {rate:+.0} input tokens/s saved\n"));
+            // Only show the rate when traffic actually flowed this interval — a perpetual
+            // "+0/s" on an idle proxy reads like fake data.
+            if rate.abs() >= 0.5 {
+                frame.push_str(&format!("\n  {rate:+.0} input tokens/s saved\n"));
+            }
         }
         prev = Some(summary.saved());
         frame.push_str(&format!(

@@ -405,6 +405,14 @@ mod imp {
                 return None;
             }
             let result = crate::compress_with_config(text, Some(provider), &self.config).ok()?;
+            // Never forward a request larger than we received. On tiny or non-chat bodies
+            // (e.g. token-count / auxiliary calls) the input-side stages can't offset the
+            // output-control instruction's fixed cost, so the compressed form is a net token
+            // *increase*. Forward the original verbatim and record nothing — this is the
+            // "never a bigger bill" guarantee, and keeps non-wins out of the savings ledger.
+            if result.input_tokens_after >= result.input_tokens_before {
+                return None;
+            }
             self.pending = Some(Pending {
                 provider,
                 model: result.model.clone(),

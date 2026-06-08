@@ -21,19 +21,47 @@ pub struct DaemonView {
     pub ca_present: bool,
 }
 
-/// USD cost saved + the compressed spend, priced via the provider registry.
+/// Benchmark output-token reduction from llmtrim's A/B suite (see bench/README). The live
+/// proxy can't measure a per-request output baseline (it never sees the un-instructed reply),
+/// so the dashboard *projects* the output side from this measured benchmark factor and labels
+/// it as such.
+const BENCH_OUTPUT_REDUCTION: f64 = 0.73;
+
+/// USD cost saved + the compressed spend, priced via the provider registry. `saved`/`spend`
+/// are *measured*; the `projected_*` helpers add the benchmark-estimated output saving.
 #[derive(Clone, Copy)]
 pub struct Cost {
     pub saved: f64,
     pub spend: f64,
+    /// The output-token portion of `spend` ($) — what we project the output saving against.
+    pub out_spend: f64,
 }
 
 impl Cost {
-    /// Round-trip cost saved as a percentage of the un-compressed bill.
+    /// Measured round-trip cost saved as a percentage of the bill — input-side only, since
+    /// output savings isn't measurable live (small; understates the real win).
     fn pct(&self) -> f64 {
         let total = self.saved + self.spend;
         if total > 0.0 {
             self.saved / total * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Projected $ saved: measured input saving + the benchmark-estimated output saving.
+    /// Compressed output is ~(1−r) of the un-instructed baseline, so the saving is
+    /// `out_spend · r/(1−r)`.
+    fn projected_saved(&self) -> f64 {
+        self.saved + self.out_spend * BENCH_OUTPUT_REDUCTION / (1.0 - BENCH_OUTPUT_REDUCTION)
+    }
+
+    /// Projected round-trip %: projected saving over the projected un-compressed bill.
+    fn projected_pct(&self) -> f64 {
+        let saved = self.projected_saved();
+        let baseline = self.spend + saved;
+        if baseline > 0.0 {
+            saved / baseline * 100.0
         } else {
             0.0
         }
@@ -174,8 +202,8 @@ pub fn snapshot(
     let hero = match cost {
         Some(c) => format!(
             "{}   {} round-trip   {} requests",
-            paint(color, GREEN, &format!("${:.2} saved", c.saved)),
-            paint(color, BOLD, &format!("-{:.0}%", c.pct())),
+            paint(color, GREEN, &format!("~${:.2} saved", c.projected_saved())),
+            paint(color, BOLD, &format!("~-{:.0}%", c.projected_pct())),
             commas(s.events),
         ),
         None => format!(
@@ -189,23 +217,31 @@ pub fn snapshot(
         ),
     };
     o.push('\n');
-    o.push_str(&panel(color, "saved (all time)", &hero));
+    let title = if cost.is_some() {
+        "saved (projected · A/B)"
+    } else {
+        "saved (all time)"
+    };
+    o.push_str(&panel(color, title, &hero));
     o.push('\n');
 
     // axes
     o.push_str(&axis(color, "input", s.input_before, s.input_after));
     o.push('\n');
     if s.output_events > 0 {
-        if s.output_before > 0 {
-            o.push_str(&axis(color, "output", s.output_before, s.output_after));
-        } else {
-            o.push_str(&format!(
-                "  {:<7} {}   {} measured",
-                "output",
-                paint(color, DIM, &" ".repeat(22)),
-                human(s.output_after)
-            ));
-        }
+        // No live output baseline → show the benchmark bar + the real billed volume, tagged.
+        o.push_str(&format!(
+            "  {:<7} {} {:>6}   {} billed   {}",
+            "output",
+            bar(color, BENCH_OUTPUT_REDUCTION * 100.0, 22),
+            paint(
+                color,
+                GREEN,
+                &format!("~{:+.0}%", -BENCH_OUTPUT_REDUCTION * 100.0)
+            ),
+            human(s.output_after),
+            paint(color, DIM, "(projected)"),
+        ));
         o.push('\n');
     }
 
@@ -233,6 +269,13 @@ pub fn snapshot(
             color,
             DIM,
             " * some counts approximate (provider lacks a public tokenizer)\n",
+        ));
+    }
+    if cost.is_some() {
+        o.push_str(&paint(
+            color,
+            DIM,
+            " ~ projected: output savings is the A/B-benchmark figure (−73%); input is measured\n   exactly. The live proxy never sees the un-compressed reply, so your output baseline\n   can't be measured here — only projected.\n",
         ));
     }
     o
@@ -354,7 +397,8 @@ pub fn export_json(
         "input": { "before": s.input_before, "after": s.input_after, "saved_pct": s.saved_pct() },
         "output": { "before": s.output_before, "after": s.output_after,
                     "events": s.output_events, "saved_pct": s.output_saved_pct() },
-        "cost": cost.map(|c| json!({ "saved_usd": c.saved, "spend_usd": c.spend, "round_trip_pct": c.pct() })),
+        "cost": cost.map(|c| json!({ "saved_usd": c.saved, "spend_usd": c.spend, "round_trip_pct": c.pct(),
+                                     "projected_saved_usd": c.projected_saved(), "projected_round_trip_pct": c.projected_pct() })),
         "approximate": s.any_approximate,
         "by_model": models.iter().map(|m| json!({
             "model": m.name, "requests": m.events, "saved_pct": m.saved_pct, "cost_saved_usd": m.cost_saved,
@@ -420,6 +464,7 @@ mod tests {
         let cost = Cost {
             saved: 12.47,
             spend: 9.0,
+            out_spend: 0.0,
         };
         let models = vec![ModelView {
             name: "gpt-4o".into(),
@@ -435,7 +480,20 @@ mod tests {
             "input axis"
         );
         assert!(out.contains("gpt-4o") && out.contains("$4.10"), "model row");
+        assert!(out.contains("projected"), "projected label present");
         assert!(!out.contains('\x1b'), "no ANSI when color=false");
+    }
+
+    #[test]
+    fn projects_output_saving_from_benchmark() {
+        // out baseline = 0.27 / (1 − 0.73) = 1.0, so projected output saved = 1.0 − 0.27 = 0.73.
+        let c = Cost {
+            saved: 1.0,
+            spend: 1.0,
+            out_spend: 0.27,
+        };
+        assert!((c.projected_saved() - 1.73).abs() < 1e-9);
+        assert!((c.projected_pct() - 1.73 / 2.73 * 100.0).abs() < 1e-9);
     }
 
     #[test]

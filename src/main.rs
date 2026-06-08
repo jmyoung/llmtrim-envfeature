@@ -650,7 +650,11 @@ fn daemon_view() -> monitor::DaemonView {
 
 fn monitor_cost(tracker: &Tracker) -> Option<monitor::Cost> {
     let models = tracker.by_model().ok()?;
-    cost_estimate(&models).map(|(saved, spend)| monitor::Cost { saved, spend })
+    cost_estimate(&models).map(|(saved, spend, out_spend)| monitor::Cost {
+        saved,
+        spend,
+        out_spend,
+    })
 }
 
 /// Per-model rows for the breakdown, top 8 by request volume, priced where the registry
@@ -778,14 +782,16 @@ fn run_monitor(
     }
 }
 
-/// `(input savings, total spend)` in USD, priced per model via the `llm_providers`
-/// registry. Savings = input tokens we cut × input price; total spend = the actual
-/// input_after + measured output, at registry rates. `None` when no recorded model matches
-/// the registry (or this build has no interceptor feature).
+/// `(input savings, total spend, output spend)` in USD, priced per model via the
+/// `llm_providers` registry. Savings = input tokens we cut × input price; total spend = the
+/// actual input_after + measured output, at registry rates; output spend is the output slice
+/// of it, so the dashboard can project the output-side saving. `None` when no recorded model
+/// matches the registry (or this build has no interceptor feature).
 #[cfg(feature = "intercept")]
-fn cost_estimate(models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64)> {
+fn cost_estimate(models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64, f64)> {
     let mut saved = 0.0;
     let mut spend = 0.0;
+    let mut out_spend = 0.0;
     let mut matched = false;
     for m in models {
         let Some(model_id) = m.model.as_deref() else {
@@ -793,12 +799,13 @@ fn cost_estimate(models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64)> {
         };
         if let Some((input_price, output_price)) = llm_prices(model_id) {
             saved += (m.input_before - m.input_after).max(0) as f64 / 1_000_000.0 * input_price;
-            spend += m.input_after as f64 / 1_000_000.0 * input_price
-                + m.output_after as f64 / 1_000_000.0 * output_price;
+            let out = m.output_after as f64 / 1_000_000.0 * output_price;
+            spend += m.input_after as f64 / 1_000_000.0 * input_price + out;
+            out_spend += out;
             matched = true;
         }
     }
-    matched.then_some((saved, spend))
+    matched.then_some((saved, spend, out_spend))
 }
 
 /// Per-1M-token `(input, output)` price for a model, matched across every provider in the
@@ -814,7 +821,7 @@ fn llm_prices(model_id: &str) -> Option<(f64, f64)> {
 }
 
 #[cfg(not(feature = "intercept"))]
-fn cost_estimate(_models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64)> {
+fn cost_estimate(_models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64, f64)> {
     None
 }
 

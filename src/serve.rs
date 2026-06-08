@@ -69,7 +69,8 @@ mod imp {
     /// Reputable direct LLM API hosts beyond the `llm_providers` registry that speak one of
     /// the three wire shapes we adapt (OpenAI / Anthropic / Gemini). Interception + CA coverage
     /// only — the wire format is detected from the body, never assumed from the host. Kept small
-    /// on purpose: each entry widens what the name-constrained MITM CA may forge.
+    /// on purpose: each entry widens what the name-constrained MITM CA may forge. To request a
+    /// host, open an issue: https://github.com/fkiene/llmtrim/issues
     static EXTRA_HOSTS: &[&str] = &[
         "opencode.ai", // opencode zen gateway (OpenAI shape)
         "api.groq.com",
@@ -88,6 +89,29 @@ mod imp {
         EXTRA_HOSTS
             .iter()
             .any(|s| host == *s || host.ends_with(&format!(".{s}")))
+    }
+
+    /// Every name-constraint domain the CA should permit: the registry parent domains plus the
+    /// curated extra hosts, sorted + deduped. The single source of truth for what we intend to
+    /// intercept; compared byte-for-byte against the CA's sidecar to decide whether to regenerate.
+    fn intercept_domains() -> Vec<String> {
+        let mut v: Vec<String> = LLM_DOMAINS
+            .iter()
+            .cloned()
+            .chain(EXTRA_HOSTS.iter().map(|h| (*h).to_string()))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// True if `host` (already lowercased) falls under one of `domains` — exact match or a
+    /// subdomain. The interceptor gates on the *CA's* domain set, so it never tries to MITM a
+    /// host the name-constrained CA can't actually sign for.
+    fn host_covered(host: &str, domains: &std::collections::HashSet<String>) -> bool {
+        domains
+            .iter()
+            .any(|d| host == d || host.ends_with(&format!(".{d}")))
     }
 
     /// Host component of a URL like `https://api.openai.com/v1` → `api.openai.com`.
@@ -296,6 +320,10 @@ mod imp {
     struct Interceptor {
         config: Arc<DenseConfig>,
         ledger: Sender<Record>,
+        /// Domains the live CA covers (its sidecar set). We intercept only hosts under these, so
+        /// a stale CA — one generated before a host was added — blind-tunnels the new host rather
+        /// than forging a cert its own name-constraints reject. Degrade safely, never break.
+        domains: Arc<std::collections::HashSet<String>>,
         /// The compressed request awaiting its response (set in `handle_request`).
         pending: Option<Pending>,
     }
@@ -315,7 +343,7 @@ mod imp {
         /// blind-tunneled, so the CA is never used outside its purpose.
         async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
             host_of(req)
-                .map(|h| provider_for_host(&h).is_some())
+                .map(|h| host_covered(&h.to_ascii_lowercase(), &self.domains))
                 .unwrap_or(false)
         }
 
@@ -808,6 +836,9 @@ mod imp {
         let handler = Interceptor {
             config: Arc::new(DenseConfig::load_for_interceptor()),
             ledger: tx,
+            // `ensure_ca` above just reconciled the CA + sidecar, so this is exactly what the
+            // live CA can sign for.
+            domains: Arc::new(covered_domains()),
             pending: None,
         };
 
@@ -857,32 +888,81 @@ mod imp {
         Ok(crate::daemon::home_dir()?.join("ca.key"))
     }
 
-    /// Load the local CA, generating a name-constrained root CA on first use. Returns
-    /// `(cert_pem, key_pem)`.
+    /// Sidecar recording the domain set the persisted CA was built for — so we can tell, without
+    /// parsing the certificate, when the intended host set changed and the CA must be regenerated.
+    fn ca_hosts_path() -> Result<PathBuf> {
+        Ok(crate::daemon::home_dir()?.join("ca.hosts"))
+    }
+
+    /// The domains the persisted CA was built for, from its sidecar (one per line). `None` when
+    /// there is no sidecar (a CA from before sidecars existed, or no CA at all).
+    fn read_ca_hosts() -> Option<Vec<String>> {
+        let text = std::fs::read_to_string(ca_hosts_path().ok()?).ok()?;
+        let v: Vec<String> = text
+            .lines()
+            .map(str::to_string)
+            .filter(|l| !l.is_empty())
+            .collect();
+        (!v.is_empty()).then_some(v)
+    }
+
+    /// The domains the live CA actually covers (its sidecar set) — the interceptor's gate. Falls
+    /// back to the static set when no sidecar is present, which is safe because `ensure_ca` always
+    /// reconciles (writing the sidecar) before the daemon reads this.
+    fn covered_domains() -> std::collections::HashSet<String> {
+        read_ca_hosts()
+            .unwrap_or_else(intercept_domains)
+            .into_iter()
+            .collect()
+    }
+
+    /// Whether the persisted CA already matches the intended host set (no regeneration needed):
+    /// the cert+key exist and the sidecar equals `expected`. Pure, for testing.
+    fn ca_is_current(have_ca: bool, sidecar: Option<&[String]>, expected: &[String]) -> bool {
+        have_ca && sidecar == Some(expected)
+    }
+
+    /// Load the local CA, (re)generating a name-constrained root CA whenever it is missing or its
+    /// recorded host set differs from the current one (a host added/removed across an update).
+    /// Regeneration is in place: tools trusting it via `NODE_EXTRA_CA_CERTS` (the file) pick it up
+    /// on relaunch — only OS trust-store *copies* go stale, so we say so. Returns `(cert, key)`.
     pub fn ensure_ca() -> Result<(String, String)> {
         let (cert_path, key_path) = (ca_cert_path()?, ca_key_path()?);
-        if cert_path.exists() && key_path.exists() {
+        let have_ca = cert_path.exists() && key_path.exists();
+        let expected = intercept_domains();
+        if ca_is_current(have_ca, read_ca_hosts().as_deref(), &expected) {
             return Ok((
                 std::fs::read_to_string(&cert_path)?,
                 std::fs::read_to_string(&key_path)?,
             ));
         }
-        let (cert_pem, key_pem) = generate_ca()?;
+        let (cert_pem, key_pem) = generate_ca(&expected)?;
         let dir = crate::daemon::home_dir()?;
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
         std::fs::write(&cert_path, &cert_pem)?;
         std::fs::write(&key_path, &key_pem)?;
+        std::fs::write(ca_hosts_path()?, expected.join("\n"))
+            .with_context(|| "failed to write CA host sidecar")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
         }
+        if have_ca {
+            // Regenerated over an existing CA because the host set changed. Env-trusting tools
+            // follow the file automatically; any OS trust-store copy is now stale.
+            eprintln!(
+                "llmtrim: CA updated for a changed provider-host set. Tools trusting it via \
+                 NODE_EXTRA_CA_CERTS pick it up on relaunch; if you trusted it system-wide \
+                 (GUI apps), re-trust it — see `llmtrim ca`."
+            );
+        }
         Ok((cert_pem, key_pem))
     }
 
-    /// Generate a root CA whose signing power is name-constrained to the LLM API domains.
-    fn generate_ca() -> Result<(String, String)> {
+    /// Generate a root CA whose signing power is name-constrained to `domains`.
+    fn generate_ca(domains: &[String]) -> Result<(String, String)> {
         use hudsucker::rcgen::{
             BasicConstraints, CertificateParams, DistinguishedName, DnType, GeneralSubtree, IsCa,
             KeyPair, KeyUsagePurpose, NameConstraints,
@@ -900,14 +980,9 @@ mod imp {
         dn.push(DnType::OrganizationName, "llmtrim");
         params.distinguished_name = dn;
         params.name_constraints = Some(NameConstraints {
-            permitted_subtrees: LLM_DOMAINS
+            permitted_subtrees: domains
                 .iter()
                 .map(|d| GeneralSubtree::DnsName(d.clone()))
-                .chain(
-                    EXTRA_HOSTS
-                        .iter()
-                        .map(|h| GeneralSubtree::DnsName((*h).to_string())),
-                )
                 .collect(),
             excluded_subtrees: vec![],
         });
@@ -1125,12 +1200,44 @@ mod imp {
 
         #[test]
         fn generated_ca_is_a_parseable_constrained_ca() {
-            let (cert_pem, key_pem) = generate_ca().unwrap();
+            let (cert_pem, key_pem) = generate_ca(&intercept_domains()).unwrap();
             assert!(cert_pem.contains("BEGIN CERTIFICATE"));
             assert!(key_pem.contains("PRIVATE KEY"));
             // Round-trips through the same parser hudsucker uses.
             let key = hudsucker::rcgen::KeyPair::from_pem(&key_pem).unwrap();
             assert!(hudsucker::rcgen::Issuer::from_ca_cert_pem(&cert_pem, key).is_ok());
+        }
+
+        #[test]
+        fn intercept_domains_include_registry_and_extras_sorted() {
+            let d = intercept_domains();
+            assert!(d.contains(&"openai.com".to_string())); // from the registry
+            assert!(d.contains(&"opencode.ai".to_string())); // from EXTRA_HOSTS
+            assert!(
+                d.windows(2).all(|w| w[0] <= w[1]),
+                "must be sorted for sidecar compare"
+            );
+        }
+
+        #[test]
+        fn host_covered_matches_exact_and_subdomains_only() {
+            let domains: std::collections::HashSet<String> =
+                ["openai.com".to_string(), "opencode.ai".to_string()]
+                    .into_iter()
+                    .collect();
+            assert!(host_covered("api.openai.com", &domains)); // subdomain
+            assert!(host_covered("opencode.ai", &domains)); // exact
+            assert!(!host_covered("openai.com.evil.com", &domains)); // suffix spoof rejected
+            assert!(!host_covered("github.com", &domains));
+        }
+
+        #[test]
+        fn ca_is_current_only_when_present_and_sidecar_matches() {
+            let want = vec!["a.com".to_string(), "b.com".to_string()];
+            assert!(ca_is_current(true, Some(&want), &want));
+            assert!(!ca_is_current(false, Some(&want), &want)); // no cert on disk
+            assert!(!ca_is_current(true, None, &want)); // no sidecar → regenerate
+            assert!(!ca_is_current(true, Some(&["a.com".to_string()]), &want)); // host added
         }
     }
 }

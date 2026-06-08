@@ -255,6 +255,17 @@ pub fn snapshot(
         ));
         o.push('\n');
     }
+    if s.cache_read_tokens > 0 {
+        // Prompt-cache reads bill at ~10% of input price → a flat 90% discount on the reused
+        // prefix. The bar shows that discount; the count is the volume served from cache.
+        o.push_str(&format!(
+            "  {:<7} {} {:>6}   {} reused at ~10%\n",
+            "cache",
+            bar(color, 90.0, 22),
+            paint(color, GREEN, "~-90%"),
+            human(s.cache_read_tokens),
+        ));
+    }
 
     // by-model table
     if !models.is_empty() {
@@ -284,16 +295,6 @@ pub fn snapshot(
         }
     }
 
-    if s.cache_read_tokens > 0 {
-        o.push_str(&paint(
-            color,
-            GREEN,
-            &format!(
-                " cache · {} prefix tokens reused, billed at ~10% (the resent context, discounted)\n",
-                human(s.cache_read_tokens)
-            ),
-        ));
-    }
     if let Some(us) = s.avg_compress_micros {
         o.push_str(&paint(
             color,

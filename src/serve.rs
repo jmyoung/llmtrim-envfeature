@@ -612,6 +612,24 @@ mod imp {
         }
     }
 
+    /// Build the lazy tokenizer BPE tables (the dominant one-time cost) + prime the stage code
+    /// paths and the first tree-sitter grammar, before the proxy starts serving.
+    fn warm_up(config: &DenseConfig) {
+        use crate::ir::ProviderKind;
+        for (kind, model) in [
+            (ProviderKind::OpenAi, Some("gpt-4o")), // o200k_base
+            (ProviderKind::OpenAi, Some("gpt-4")),  // cl100k_base
+            (ProviderKind::Anthropic, None),        // approximate counter
+        ] {
+            if let Ok(c) = crate::tokenizer::counter_for(kind, model) {
+                let _ = c.count("warm up the tokenizer table");
+            }
+        }
+        // One real compression primes the stage code paths + the first grammar load.
+        let sample = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"function f(){ return 1; }"}]}"#;
+        let _ = crate::compress_with_config(sample, Some(ProviderKind::OpenAi), config);
+    }
+
     async fn run_async(port: u16) -> Result<()> {
         let _ = aws_lc_rs::default_provider().install_default();
 
@@ -656,6 +674,11 @@ mod imp {
             "  trust the CA: NODE_EXTRA_CA_CERTS={}",
             ca_cert_path()?.display()
         );
+
+        // Prime the lazy tokenizer tables + stage machinery before serving, so the first real
+        // request runs at steady state instead of paying ~150 ms of one-time init (which slowed
+        // the first call and skewed the latency metric). One-time, at boot, off the request path.
+        warm_up(&handler.config);
 
         let proxy = Proxy::builder()
             .with_addr(addr)

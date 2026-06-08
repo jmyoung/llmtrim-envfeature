@@ -4,6 +4,8 @@
 //! the rehydration plan plus a per-stage report. Token measurement uses the real
 //! [`TokenCounter`] over the provider's content text segments.
 
+use std::collections::HashMap;
+
 use crate::gate::{GateKind, PlanEntry, Scope, Transform};
 use crate::ir::Request;
 use crate::provider::Provider;
@@ -38,6 +40,32 @@ fn count_content(req: &Request, provider: &dyn Provider, counter: &dyn TokenCoun
         .sum()
 }
 
+/// Like [`count_content`] but memoizes per-segment counts across the pipeline run: a content
+/// segment whose text is unchanged since a prior stage is summed from `cache` (a hash lookup)
+/// instead of re-tokenized (a BPE pass). The win is multi-segment prompts — when a stage drops
+/// or reorders whole segments (retrieve, dedup) the kept ones are reused, not re-tokenized. A
+/// string is only cloned into the cache on a miss, i.e. when we have to tokenize it anyway.
+fn count_content_cached(
+    req: &Request,
+    provider: &dyn Provider,
+    counter: &dyn TokenCounter,
+    cache: &mut HashMap<String, usize>,
+) -> usize {
+    provider
+        .content_text_pointers(req)
+        .iter()
+        .filter_map(|p| req.get_str(p))
+        .map(|s| match cache.get(s) {
+            Some(&c) => c,
+            None => {
+                let c = counter.count(s);
+                cache.insert(s.to_string(), c);
+                c
+            }
+        })
+        .sum()
+}
+
 /// Tokens over the tool/function schemas (resent every call — Stage G prunes them).
 fn count_tools(req: &Request, counter: &dyn TokenCounter) -> usize {
     req.raw()
@@ -69,7 +97,10 @@ pub fn run(
     // can change (its `scope`). Most agent stages touch only `tools`, so the big content
     // text isn't re-tokenized each time. Same gating decisions, far fewer tokenizations —
     // the per-request hot path.
-    let mut content = count_content(req, provider, counter);
+    // Per-segment token-count memo, reused across stages: a content segment whose text is
+    // unchanged since a prior stage is summed from the cache, not re-tokenized.
+    let mut seg_cache: HashMap<String, usize> = HashMap::new();
+    let mut content = count_content_cached(req, provider, counter, &mut seg_cache);
     let mut tools = count_tools(req, counter);
     let input_tokens_before = content + tools;
 
@@ -96,10 +127,13 @@ pub fn run(
                     (content, tools)
                 } else {
                     match stage.scope() {
-                        Scope::Content => (count_content(req, provider, counter), tools),
+                        Scope::Content => (
+                            count_content_cached(req, provider, counter, &mut seg_cache),
+                            tools,
+                        ),
                         Scope::Tools => (content, count_tools(req, counter)),
                         Scope::Both => (
-                            count_content(req, provider, counter),
+                            count_content_cached(req, provider, counter, &mut seg_cache),
                             count_tools(req, counter),
                         ),
                     }

@@ -147,6 +147,12 @@ const LANG_SAMPLE_BYTES: usize = 2048;
 /// stopword set — matches whole-text detection for any monolingual input.
 const LANG_DETECT_MAX_BYTES: usize = 8 * 1024;
 
+/// Cap on the (recent) content scanned to build the tool-selection query word-set. Lowercasing
+/// and word-segmenting the whole resent prompt every call dominated this stage (~15ms on a
+/// 120K request); tool relevance tracks the current task, so a bounded slice of the newest
+/// content suffices (already-invoked tools are protected separately).
+const TOOL_QUERY_MAX_BYTES: usize = 16 * 1024;
+
 /// Keep only tools whose name/description shares a content word with the
 /// conversation. Safety: if nothing matches, keep all tools (never strip the whole
 /// toolset on a weak query).
@@ -157,14 +163,19 @@ fn select_tools(req: &mut Request, provider: &dyn Provider) {
     }
 
     let pointers = provider.content_text_pointers(req);
-    // Lowercase the content once into a single buffer (one allocation per segment); the
-    // language sample is just its bounded leading slice, and the query word-set borrows
-    // slices out of it — no per-word allocation.
+    // Build the query word-set from the most-recent content only, bounded by
+    // `TOOL_QUERY_MAX_BYTES`: scanning newest-first and stopping at the cap keeps this O(cap)
+    // instead of O(whole resent prompt), which was the stage's dominant cost. The query word-set
+    // borrows slices out of `lower` (no per-word allocation); already-invoked tools are kept
+    // regardless (below), so bounding the scan can't dangle a `tool_use`.
     let mut lower = String::new();
-    for p in &pointers {
+    for p in pointers.iter().rev() {
         if let Some(s) = req.get_str(p) {
             lower.push_str(&s.to_lowercase());
             lower.push(' ');
+            if lower.len() >= TOOL_QUERY_MAX_BYTES {
+                break;
+            }
         }
     }
     let sample_end = lower.len().min(LANG_SAMPLE_BYTES);

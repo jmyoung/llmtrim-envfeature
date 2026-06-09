@@ -103,6 +103,10 @@ impl Provider for AnthropicProvider {
         );
     }
 
+    fn set_prompt_cache_key(&self, _req: &mut Request, _key: &str) {
+        // Anthropic uses explicit `cache_control` breakpoints, not a prompt cache key.
+    }
+
     fn set_cache_breakpoints(&self, req: &mut Request, max: usize) {
         if max == 0 {
             return;

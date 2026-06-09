@@ -43,7 +43,7 @@ impl Transform for HygieneStage {
         provider: &dyn Provider,
         _plan: &mut Vec<PlanEntry>,
     ) -> Result<()> {
-        for ptr in provider.content_text_pointers(req) {
+        for ptr in crate::cache_zone::compressible_pointers(req, provider) {
             let Some(s) = req.get_str(&ptr).map(str::to_string) else {
                 continue;
             };

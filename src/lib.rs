@@ -13,6 +13,7 @@ use serde_json::Value;
 
 pub mod autostart;
 pub mod bench;
+pub mod cache_zone;
 pub mod config;
 pub mod daemon;
 pub mod gate;
@@ -55,6 +56,16 @@ pub struct CompressResult {
 /// one-line change here.
 fn stages_for(_provider: ProviderKind, config: &config::DenseConfig) -> Vec<Box<dyn Transform>> {
     let mut stages: Vec<Box<dyn Transform>> = Vec::new();
+    // Stage T (input, lossy): compress tool outputs (logs/diffs/grep) first, so the
+    // structure-aware windowing runs before generic prose pruning sees a giant log.
+    if config.toolout {
+        stages.push(Box::new(stages::ToolOutputStage {
+            max_lines: config.toolout_max_lines,
+            min_lines: config.toolout_min_lines,
+            template: config.toolout_template,
+            mode: stages::toolout::ModeSetting::parse(&config.toolout_mode),
+        }));
+    }
     // Stage B (input-side, lossy): prune large context to the relevant chunks first.
     if config.retrieve {
         stages.push(Box::new(stages::RetrieveStage {
@@ -88,11 +99,22 @@ fn stages_for(_provider: ProviderKind, config: &config::DenseConfig) -> Vec<Box<
             normalize_unicode: config.normalize_unicode,
         }));
     }
+    // Lossy sample of huge record arrays (keeps anomalies) FIRST — drops rows while it's
+    // still JSON; then the columnar encoder below packs the survivors. `safe` (json_crush
+    // off) keeps every row and relies on serialize's lossless union CSV instead.
+    if config.json_crush {
+        stages.push(Box::new(stages::JsonCrushStage {
+            max_rows: config.json_crush_max_rows,
+        }));
+    }
+    // Columnar-encode record arrays (incl. near-uniform → union CSV). Lossless.
     if config.serialize {
         stages.push(Box::new(stages::SerializeStage {
             min_rows: config.serialize_min_rows,
             nested: config.serialize_nested,
             csv: config.serialize_csv,
+            flatten: config.serialize_flatten,
+            buckets: config.serialize_buckets,
         }));
     }
     // Stage E (input, lossy-ish): collapse duplicate lines.
@@ -355,5 +377,84 @@ mod tests {
         let a: Value = serde_json::from_str(resp).unwrap();
         let b: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn agent_preset_compresses_tool_result_diff() {
+        // A 40-file diff returned as a tool_result — over the toolout file cap, so the
+        // least-changed files are dropped to positional elision markers.
+        let mut diff = String::new();
+        for i in 0..40 {
+            diff.push_str(&format!(
+                "diff --git a/f{i}.rs b/f{i}.rs\n--- a/f{i}.rs\n+++ b/f{i}.rs\n\
+                 @@ -1,3 +1,3 @@\n ctx_{i}\n-old line {i}\n+new line {i}\n trailing_{i}\n"
+            ));
+        }
+        let input = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": diff}],
+            }],
+            "max_tokens": 1024,
+        })
+        .to_string();
+
+        let cfg = config::DenseConfig::preset("agent").expect("agent preset");
+        let result = compress_with_config(&input, Some(ProviderKind::Anthropic), &cfg)
+            .expect("compress");
+
+        assert!(
+            result.input_tokens_after < result.input_tokens_before,
+            "toolout compressed the diff ({} -> {})",
+            result.input_tokens_before,
+            result.input_tokens_after
+        );
+        assert!(
+            result.request_json.contains("omitted"),
+            "dropped files left a positional elision marker in the body"
+        );
+    }
+
+    #[test]
+    fn frozen_prefix_untouched_while_live_zone_compresses() {
+        // message 0 is the cached prefix (`cache_control`) holding a big log; message 1 is
+        // the live user turn with another big log. The agent preset must compress the live
+        // log but leave the cached one byte-identical — else it busts the prompt cache.
+        let cached_log = (0..80)
+            .map(|i| format!("INFO  step {i} routine nominal pass"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\nERROR failure inside the cached prefix";
+        let live_log = (0..80)
+            .map(|i| format!("DEBUG worker {i} idle waiting for work"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\nERROR failure inside the live turn";
+        let input = serde_json::json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": cached_log,
+                     "cache_control": {"type": "ephemeral"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "b", "content": live_log}
+                ]},
+            ],
+            "max_tokens": 1024,
+        })
+        .to_string();
+
+        let cfg = config::DenseConfig::preset("agent").expect("agent preset");
+        let result = compress_with_config(&input, Some(ProviderKind::Anthropic), &cfg)
+            .expect("compress");
+        let body: Value = serde_json::from_str(&result.request_json).unwrap();
+
+        let m0 = body.pointer("/messages/0/content/0/content").and_then(Value::as_str).unwrap();
+        assert_eq!(m0, cached_log, "cached prefix must be byte-identical (cache stays warm)");
+
+        let m1 = body.pointer("/messages/1/content/0/content").and_then(Value::as_str).unwrap();
+        assert!(m1.len() < live_log.len(), "live turn was compressed ({} -> {})", live_log.len(), m1.len());
     }
 }

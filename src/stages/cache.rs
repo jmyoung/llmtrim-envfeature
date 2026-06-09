@@ -43,8 +43,57 @@ impl Transform for CacheStage {
         provider: &dyn Provider,
         _plan: &mut Vec<PlanEntry>,
     ) -> Result<()> {
+        // Stabilize the prefix so it's byte-identical across SDK restarts (raises the
+        // provider's cache-hit rate). Skip when the client manages its own caching —
+        // reordering tools or injecting a key would bust the cache it set up.
+        if !crate::cache_zone::has_cache_control(req.raw()) {
+            sort_tools(req);
+            let key = format!("{:016x}", cache_prefix_hash(req));
+            provider.set_prompt_cache_key(req, &key);
+        }
         provider.set_cache_breakpoints(req, self.max_breakpoints);
         Ok(())
+    }
+}
+
+/// Canonicalize `tools[]`: recursively sort every JSON-object key (schemas included), then
+/// sort the tools by name. Object key order and tool order are semantically irrelevant, so
+/// this is lossless — but it makes the prefix deterministic across SDKs that emit tools in
+/// hash-randomized order, which otherwise bust the provider cache on every restart.
+fn sort_tools(req: &mut Request) {
+    let Some(Value::Array(tools)) = req.raw_mut().get_mut("tools") else {
+        return;
+    };
+    for tool in tools.iter_mut() {
+        sort_keys(tool);
+    }
+    tools.sort_by(|a, b| tool_name(a).cmp(tool_name(b)));
+}
+
+/// Tool name across wire shapes: Anthropic top-level `name`, OpenAI `function.name`.
+fn tool_name(tool: &Value) -> &str {
+    tool.get("name")
+        .or_else(|| tool.get("function").and_then(|f| f.get("name")))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+/// Recursively sort object keys in place (relies on serde_json's `preserve_order`).
+fn sort_keys(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                sort_keys(child);
+            }
+            let mut entries: Vec<(String, Value)> =
+                std::mem::take(map).into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            for (k, val) in entries {
+                map.insert(k, val);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(sort_keys),
+        _ => {}
     }
 }
 
@@ -163,6 +212,72 @@ mod tests {
             req.raw(),
             &body,
             "OpenAI request is unchanged (automatic caching)"
+        );
+    }
+
+    fn run_cache_stage(req: &mut Request, provider: &dyn Provider) {
+        let mut plan: Vec<PlanEntry> = Vec::new();
+        CacheStage { max_breakpoints: 4 }
+            .apply(req, provider, &mut plan)
+            .unwrap();
+    }
+
+    #[test]
+    fn stabilize_sorts_tools_and_schema_keys() {
+        let mut req = Request::from_value(
+            ProviderKind::OpenAi,
+            json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "zebra", "parameters": {"b": 1, "a": 2}}},
+                    {"type": "function", "function": {"name": "apple", "parameters": {}}},
+                ]
+            }),
+        );
+        run_cache_stage(&mut req, &OpenAiProvider);
+        let tools = req.raw().get("tools").and_then(Value::as_array).unwrap();
+        assert_eq!(tools[0].pointer("/function/name").unwrap(), "apple", "tools sorted by name");
+        assert_eq!(tools[1].pointer("/function/name").unwrap(), "zebra");
+        let keys: Vec<&str> = tools[1]
+            .pointer("/function/parameters")
+            .and_then(Value::as_object)
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["a", "b"], "schema keys canonicalized");
+    }
+
+    #[test]
+    fn openai_gets_a_stable_prompt_cache_key() {
+        let mut req = Request::from_value(
+            ProviderKind::OpenAi,
+            json!({"model": "gpt-4o", "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]}),
+        );
+        run_cache_stage(&mut req, &OpenAiProvider);
+        assert!(
+            req.raw().get("prompt_cache_key").and_then(Value::as_str).is_some(),
+            "prompt_cache_key injected for OpenAI"
+        );
+    }
+
+    #[test]
+    fn stabilize_defers_to_client_managed_caching() {
+        // A client `cache_control` marker means it manages its own cache → we must not
+        // reorder tools (that would bust it).
+        let mut req = anthropic(json!({
+            "max_tokens": 1, "messages": [],
+            "tools": [
+                {"name": "zebra", "input_schema": {}, "cache_control": {"type": "ephemeral"}},
+                {"name": "apple", "input_schema": {}},
+            ]
+        }));
+        run_cache_stage(&mut req, &AnthropicProvider);
+        assert_eq!(
+            req.raw().pointer("/tools/0/name").unwrap(),
+            "zebra",
+            "tool order preserved when the client manages caching"
         );
     }
 

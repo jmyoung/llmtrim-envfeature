@@ -56,7 +56,9 @@ impl Transform for RetrieveStage {
         provider: &dyn Provider,
         _plan: &mut Vec<PlanEntry>,
     ) -> Result<()> {
-        let pointers = provider.content_text_pointers(req);
+        // Compress only the live zone — never re-prune content in the provider's frozen
+        // (cache_control) prefix, which would bust the prompt cache.
+        let pointers = crate::cache_zone::compressible_pointers(req, provider);
         let min = self.min_segment_chars;
 
         // Role-aware classification: prune only bulk *context*, never the
@@ -116,6 +118,12 @@ impl Transform for RetrieveStage {
             let Some(text) = req.get_str(&s.ptr).map(str::to_string) else {
                 continue;
             };
+            // Prose pruning would corrupt a JSON array/object — leave those to serialize /
+            // json_crush, which encode them by shape.
+            if serde_json::from_str::<Value>(text.trim()).is_ok_and(|v| v.is_array() || v.is_object())
+            {
+                continue;
+            }
             // Prune the segment, but never touch directive regions embedded in it
             // (e.g. `<system-reminder>` blocks carry CLAUDE.md + harness instructions
             // that must survive regardless of query relevance). `None` = unchanged.

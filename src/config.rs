@@ -49,6 +49,17 @@ pub struct DenseConfig {
     pub serialize_nested: bool,
     /// Stage D — encode a top-level uniform flat array as CSV instead of TOON (opt-in).
     pub serialize_csv: bool,
+    /// Stage D — flatten nested-uniform records to dotted columns (`meta.region`) before
+    /// columnar encoding. Information-preserving, structurally reshaped; opt-in.
+    pub serialize_flatten: bool,
+    /// Stage D — partition a heterogeneous record array into uniform groups by shape,
+    /// each emitted as its own TOON table. Regroups rows; opt-in.
+    pub serialize_buckets: bool,
+    /// Stage — lossy down-sampling of record arrays longer than `json_crush_max_rows`:
+    /// keep first/last + outliers (errors / rare values) + a query-biased sample.
+    pub json_crush: bool,
+    /// Row cap a record array is sampled down to when `json_crush` is on.
+    pub json_crush_max_rows: usize,
     /// Stage D — strip embedded base64 blobs / `data:` URIs (≥200-char runs → a
     /// `[base64 elided: N]` marker). Lossy, but measured quality-neutral (+0.0pp on
     /// `bench/data/base64.jsonl`), so on in the `auto` presets; `safe` keeps blobs.
@@ -100,6 +111,21 @@ pub struct DenseConfig {
     pub tool_trim_desc: bool,
     /// Stage G — max characters for a tool description when trimming.
     pub tool_max_desc_chars: usize,
+    /// Stage T — tool-output compression: window logs / diffs / grep output coming back
+    /// from tools (the agent read path). Lossy; off by default.
+    pub toolout: bool,
+    /// Stage T — upper bound on lines kept per tool-output segment (adaptive-budget cap).
+    pub toolout_max_lines: usize,
+    /// Stage T — skip tool-output segments shorter than this many lines.
+    pub toolout_min_lines: usize,
+    /// Stage T — fold parametric log-line runs with a lossless Drain template pass first.
+    pub toolout_template: bool,
+    /// Stage T — adaptive/aggressive split: `"adaptive"` (always window to the budget),
+    /// `"aggressive"` (always signal-only: errors / changed lines / one match per file +
+    /// a summary), or `"auto"` (decide per segment by noise density — the tuned default).
+    /// Dropped lines are elided by position (`[… N lines omitted …]`); the agent re-runs
+    /// the tool if it needs them.
+    pub toolout_mode: String,
     /// Stage C — skeletonize fenced code blocks (drop function bodies to stubs).
     /// Lossy; off by default.
     pub skeletonize: bool,
@@ -131,6 +157,10 @@ impl Default for DenseConfig {
             output_compact_code: false,
             serialize_nested: true,
             serialize_csv: false,
+            serialize_flatten: false,
+            serialize_buckets: false,
+            json_crush: false,
+            json_crush_max_rows: 50,
             strip_base64: false,
             numeric_sig_figs: None,
             normalize_unicode: false,
@@ -151,6 +181,11 @@ impl Default for DenseConfig {
             tool_select: false,
             tool_trim_desc: false,
             tool_max_desc_chars: 300,
+            toolout: false,
+            toolout_max_lines: 40,
+            toolout_min_lines: 20,
+            toolout_template: true,
+            toolout_mode: "auto".to_string(),
             skeletonize: false,
             minify_code: false,
             multimodal: false,
@@ -240,6 +275,10 @@ impl DenseConfig {
                 c.retrieve = true;
                 c.retrieve_sentence = true;
                 c.retrieve_keep_ratio = 0.35;
+                // Long context can embed logs/diffs/grep dumps or huge JSON tables —
+                // compress those too (shape-gated; prose is left to retrieve above).
+                c.toolout = true;
+                c.json_crush = true;
                 // Output control on by default: terse output holds quality (often improves
                 // it) and output tokens cost 3–5× input — the metric is cost-at-no-quality-
                 // loss, not losslessness. `safe` is the lossless-only preset.
@@ -257,6 +296,10 @@ impl DenseConfig {
                 c.tool_select = true;
                 c.tool_trim_desc = true;
                 c.cache = true;
+                c.toolout = true; // window log/diff/grep tool results (the agent read path)
+                c.serialize_flatten = true; // dot-flatten nested tool-result JSON
+                c.serialize_buckets = true; // bucket heterogeneous record arrays
+                c.json_crush = true; // sample huge record arrays to representatives
                 // No terse output here: on tool-calling traffic it gave ~no cost benefit
                 // (glaive cost 7%) and a quality dip (100→92 at n=12) — see bench/README.
                 c.multimodal = true; // downscale images to the provider cap (see `rag` note)
@@ -267,6 +310,10 @@ impl DenseConfig {
             "code" => {
                 c.skeletonize = true;
                 c.minify_code = true;
+                // A coding turn often pastes a build log / diff / grep dump or a big JSON
+                // config; these no-op on actual code (shape-gated), fire only when present.
+                c.toolout = true;
+                c.json_crush = true;
                 c.output_control = true;
                 c.multimodal = true; // downscale images to the provider cap (see `rag` note)
                 c.strip_base64 = true; // elide base64 blobs (measured +0.0pp, see `rag` note)
@@ -290,6 +337,10 @@ impl DenseConfig {
                 c.tool_select = true;
                 c.tool_trim_desc = true;
                 c.cache = true;
+                c.toolout = true; // compress log/diff/grep tool results (auto split)
+                c.serialize_flatten = true;
+                c.serialize_buckets = true;
+                c.json_crush = true;
                 c.output_control = true;
                 c.multimodal = true; // downscale images to the provider cap (see `rag` note)
                 c.strip_base64 = true; // elide base64 blobs (measured +0.0pp, see `rag` note)

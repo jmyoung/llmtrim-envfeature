@@ -45,6 +45,12 @@ pub trait Provider {
     /// (OpenAI). Lossless — adds caching hints, never changes content.
     fn set_cache_breakpoints(&self, req: &mut Request, max: usize);
 
+    /// Pin the provider's automatic prefix cache to a tenant-stable identity via a
+    /// stable cache key (OpenAI `prompt_cache_key`), so similar prefixes route to the
+    /// same cache node instead of colliding org-wide. Only set if absent. No-op where
+    /// the provider has no such key (Anthropic / Google use explicit breakpoints).
+    fn set_prompt_cache_key(&self, req: &mut Request, key: &str);
+
     /// `(name, description)` for each tool, in array order (empty if no tools).
     /// Abstracts the OpenAI `function.{name,description}` vs Anthropic top-level
     /// `{name,description}` shapes (Stage G).

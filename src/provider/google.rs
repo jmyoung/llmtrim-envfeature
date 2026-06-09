@@ -102,6 +102,10 @@ impl Provider for GoogleProvider {
         // Gemini caching is a separate `cachedContents` resource, not inline breakpoints.
     }
 
+    fn set_prompt_cache_key(&self, _req: &mut Request, _key: &str) {
+        // No inline prompt cache key on Gemini (caching is the `cachedContents` resource).
+    }
+
     fn tool_descriptors(&self, req: &Request) -> Vec<(String, String)> {
         let Some(tools) = req.raw().get("tools").and_then(Value::as_array) else {
             return Vec::new();

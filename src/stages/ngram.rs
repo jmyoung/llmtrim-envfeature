@@ -47,8 +47,7 @@ impl Transform for NgramStage {
     ) -> Result<()> {
         // Keep (pointer, text) pairs so write-back stays aligned even if a pointer
         // yields no string.
-        let segs: Vec<(String, String)> = provider
-            .content_text_pointers(req)
+        let segs: Vec<(String, String)> = crate::cache_zone::compressible_pointers(req, provider)
             .into_iter()
             .filter_map(|p| req.get_str(&p).map(|s| (p, s.to_string())))
             .collect();

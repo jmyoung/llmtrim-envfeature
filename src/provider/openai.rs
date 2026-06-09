@@ -155,6 +155,15 @@ impl Provider for OpenAiProvider {
         // OpenAI caches the longest matching prefix automatically; no breakpoint API.
     }
 
+    fn set_prompt_cache_key(&self, req: &mut Request, key: &str) {
+        // `prompt_cache_key` pins the automatic prefix cache to a stable identity. Only
+        // set it when the caller hasn't, so a client-chosen key always wins.
+        if let Some(obj) = req.raw_mut().as_object_mut() {
+            obj.entry("prompt_cache_key")
+                .or_insert_with(|| Value::String(key.to_string()));
+        }
+    }
+
     fn tool_descriptors(&self, req: &Request) -> Vec<(String, String)> {
         let Some(tools) = req.raw().get("tools").and_then(Value::as_array) else {
             return Vec::new();

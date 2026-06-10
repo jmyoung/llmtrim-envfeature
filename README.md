@@ -291,6 +291,9 @@ Under the hood `auto` routes by shape: tools → `agent`, code → `code`, long-
 | `skeleton_keep_full_top_k` | `5` | bodies kept for the top-k functions overlapping the conversation (HCP-graded) |
 | `skeleton_drop_unmatched` / `skeleton_drop_min_body_lines` | `false` / `8` | also drop zero-overlap functions ≥ N lines entirely (on in `aggressive`) |
 | `multimodal` / `image_detail` | `false` | Stage H downscale to the provider's cap |
+| `tool_minify_schema` | `false` → on in `agent`/`aggressive` | minify tool JSON-Schemas in place (drop `title`/`$schema`/`examples`, dedup boilerplate descriptions) — stays valid JSON Schema |
+| `quality_gate` | `true` | after the token gate, revert a lossy cut whose query-relevant coverage drops below the calibrated threshold ("saved tokens by deleting the answer") |
+| `memo` | `true` | proxy-only turn-stability memo: an already-seen conversation prefix reuses last turn's compressed bytes verbatim, keeping the provider prefix cache warm on agent loops (in-memory only) |
 
 Env: `LLMTRIM_PRESET` (preset by name), `LLMTRIM_CONFIG` (config-file path), `LLMTRIM_DB_PATH` (ledger location).
 

@@ -127,7 +127,10 @@ mod tests {
         }));
         let p = for_kind(ProviderKind::Anthropic);
         let comp = compressible_pointers(&r, p.as_ref());
-        assert!(comp.iter().all(|x| x.starts_with("/messages/2")), "only the live turn: {comp:?}");
+        assert!(
+            comp.iter().all(|x| x.starts_with("/messages/2")),
+            "only the live turn: {comp:?}"
+        );
         let frozen = frozen_pointers(&r, p.as_ref());
         assert!(frozen.contains("/messages/0/content/0/text"));
         assert!(frozen.contains("/messages/1/content/0/text"));
@@ -141,8 +144,15 @@ mod tests {
         }));
         let p = for_kind(ProviderKind::Anthropic);
         let frozen = frozen_pointers(&r, p.as_ref());
-        assert!(frozen.contains("/system/0/text"), "marked system is frozen: {frozen:?}");
+        assert!(
+            frozen.contains("/system/0/text"),
+            "marked system is frozen: {frozen:?}"
+        );
         // The (unmarked) user turn stays compressible.
-        assert!(compressible_pointers(&r, p.as_ref()).iter().any(|x| x.starts_with("/messages/0")));
+        assert!(
+            compressible_pointers(&r, p.as_ref())
+                .iter()
+                .any(|x| x.starts_with("/messages/0"))
+        );
     }
 }

@@ -1,13 +1,13 @@
 //! Stage B — lexical retrieval (BM25 + TextRank). LOSSY / opt-in.
 //!
-//! The #1 savings lever (spec §2): instead of stuffing a whole large context
+//! The #1 savings lever: instead of stuffing a whole large context
 //! segment, keep only the chunks relevant to the query — BM25 against the short
 //! conversation text — or, when there is no query, the most central chunks
 //! (TextRank over a lexical-similarity graph). Pure lexical: no model, no
 //! embeddings (spec scope rule 1).
 //!
 //! Lossy: dropped chunks are gone, replaced by a positional elision marker
-//! (referenced by position, never a hash — spec §5). Off by default; quality is
+//! (referenced by position, never a hash). Off by default; quality is
 //! checked offline via recall@k (see the unit tests) until the live quality gate
 //! lands. The token gate reverts the stage if it doesn't reduce tokens.
 

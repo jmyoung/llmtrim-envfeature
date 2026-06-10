@@ -1,7 +1,7 @@
 //! SQLite savings ledger.
 //!
-//! Mirrors RTK's tracking approach (rusqlite, `~/.local/share/<tool>/tracking.db`)
-//! but records **real-tokenizer** counts (spec §6) and carries nullable
+//! A rusqlite ledger at `~/.local/share/<tool>/tracking.db` that records
+//! **real-tokenizer** counts and carries nullable
 //! output-token columns for the round-trip cost model once the proxy phase can
 //! measure them. Recording is best-effort at the CLI layer: a ledger failure must
 //! never block the user's compressed output.

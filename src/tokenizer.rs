@@ -1,6 +1,6 @@
 //! Token measurement — the ground-truth counter.
 //!
-//! Spec §1/§6: every transform is measured with the *real target tokenizer*, never
+//! Ground rule: every transform is measured with the *real target tokenizer*, never
 //! by byte/char length ("a shorter string can tokenize to more tokens"). All stage
 //! code counts tokens only through [`TokenCounter`], so the char≠token rule is
 //! enforced structurally.

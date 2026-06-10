@@ -1,4 +1,4 @@
-//! Benchmark harness (spec §6, quality axis).
+//! Benchmark harness (quality axis).
 //!
 //! The token gate proves savings; this proves the savings keep the task **correct**,
 //! on real corpora with a real model. Two axes per run:

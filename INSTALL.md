@@ -61,7 +61,7 @@ cargo build --release
 cargo install --path .
 ```
 
-Requires Rust 1.85+ (edition 2024). `rusqlite` is bundled (no system SQLite needed).
+Requires Rust 1.88+ (edition 2024). `rusqlite` is bundled (no system SQLite needed).
 
 ## Verify
 

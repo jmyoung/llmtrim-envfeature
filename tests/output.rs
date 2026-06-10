@@ -1,7 +1,7 @@
-//! §6 output-side eval — the complement to the input-side `eval.rs`.
+//! Output-side eval — the complement to the input-side `eval.rs`.
 //!
 //! Real output-token savings (terse → ~73% fewer response tokens) are a property of
-//! the model's *response*, so per spec §6 they're measured live/out-of-band. Offline
+//! the model's *response*, so they're measured live/out-of-band. Offline
 //! and network-free like its sibling evals, this gate proves the rest end-to-end
 //! through the public `compress_with_config` API:
 //!   1. provider-agnostic injection — the shaping instruction reaches the request for

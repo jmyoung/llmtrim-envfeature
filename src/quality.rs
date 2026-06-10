@@ -1,7 +1,7 @@
-//! Quality evaluation harness (spec §6).
+//! Quality evaluation harness.
 //!
 //! The token gate proves savings; this proves the savings don't break the task.
-//! Per §6, input and output quality are evaluated separately, and a lossy stage may
+//! Input and output quality are evaluated separately, and a lossy stage may
 //! only ship once it passes here.
 //!
 //! - **Recall** (network-free): for lossy retrieval (Stage B), does the
@@ -87,7 +87,7 @@ pub fn mean_recall(results: &[RecallResult]) -> f64 {
 
 /// Load a held-out corpus from JSONL into recall cases — so existing benchmark
 /// datasets (LongBench, ZeroSCROLLS, prompt-compression-benchmarker exports) drive
-/// the §6 gate with no bespoke framework. Each line may use `context`|`input`,
+/// the quality gate with no bespoke framework. Each line may use `context`|`input`,
 /// `question`|`query`, and `answers`|`answer`|`expected`.
 pub fn load_corpus(jsonl: &str, provider: ProviderKind) -> Result<Vec<RecallCase>> {
     let mut cases = Vec::new();

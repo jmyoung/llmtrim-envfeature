@@ -20,14 +20,21 @@ static GREP_REC: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^((?:[A-Za-z]:)?[^:\n]*[A-Za-z./\\][^:\n]*):\d+:").unwrap());
 
 fn file_of(line: &str) -> Option<&str> {
-    GREP_REC.captures(line).and_then(|c| c.get(1)).map(|m| m.as_str())
+    GREP_REC
+        .captures(line)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
 }
 
 /// Compress a grep segment. Returns `None` when it already fits the budget.
 pub fn compress(text: &str, ctx: &Ctx, query: &HashSet<String>) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let files: Vec<Option<&str>> = lines.iter().map(|l| file_of(l)).collect();
-    let distinct = files.iter().filter_map(|f| *f).collect::<HashSet<_>>().len();
+    let distinct = files
+        .iter()
+        .filter_map(|f| *f)
+        .collect::<HashSet<_>>()
+        .len();
 
     // Signal = distinct files; many matches across few files goes aggressive (one match
     // per file). The adaptive path no-ops on an already-small dump.
@@ -110,7 +117,10 @@ mod tests {
         for file in ["src/a.rs:", "src/b.rs:", "src/target.rs:"] {
             assert!(out.contains(file), "{file} still represented");
         }
-        assert!(out.contains("omitted"), "dropped matches elided by position");
+        assert!(
+            out.contains("omitted"),
+            "dropped matches elided by position"
+        );
     }
 
     #[test]
@@ -138,7 +148,10 @@ mod tests {
         };
         let out = compress(&dump, &ctx, &HashSet::new()).expect("compresses");
         let kept_matches = out.lines().filter(|l| l.contains(".rs:")).count();
-        assert_eq!(kept_matches, 3, "one match per file (a, b, target), got {kept_matches}");
+        assert_eq!(
+            kept_matches, 3,
+            "one match per file (a, b, target), got {kept_matches}"
+        );
         for file in ["src/a.rs:", "src/b.rs:", "src/target.rs:"] {
             assert!(out.contains(file), "{file} represented");
         }

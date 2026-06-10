@@ -1,6 +1,6 @@
 //! Transport — send the compressed request to the LLM API and return the response.
 //!
-//! Blocking `ureq` (no async — RTK ethos; a request/response round-trip needs no
+//! Blocking `ureq` (no async — a request/response round-trip needs no
 //! concurrency). The pure parts (`url`, `headers`) are unit-tested; the live
 //! `send` needs an API key + network, so it isn't exercised in the test suite.
 

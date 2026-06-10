@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Read-path tool-output compression (Stage T)**: adaptive compression of `tool_result`
+  content — log windowing with severity-aware keeps (errors-only mode under pressure),
+  diff/grep/plaintext handling, repeated-template masking — with cache discipline so
+  provider prefix caching is never broken mid-conversation. Generated content (lockfiles,
+  minified bundles, base64 blobs) is detected and skipped; ANSI/CR sequences are
+  normalized before detection.
+- **Shared terminal UI** module (width-aware panels and tables) used by `monitor`,
+  `setup`, and `update` output.
+- Lossless **embedded-JSON minification** in prose (exact numeric round-trip).
+- Bench: tool-output corpus + Headroom head-to-head harness; judge-verdict parsing,
+  transient-error skip, and cache-bust nonces for fair A/B runs.
 - **MITM HTTPS interceptor** (`serve`): a man-in-the-middle proxy (hudsucker) that compresses
   every tool's LLM API calls in flight, with **streaming (SSE) pass-through**. Provider host
   allowlist + name-constrained CA derived from the `llm_providers` registry. `llmtrim ca`

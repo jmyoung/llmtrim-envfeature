@@ -1,4 +1,4 @@
-//! Quality gate (spec §6): recall-vs-savings sweep for lossy Stage B retrieval.
+//! Quality gate: recall-vs-savings sweep for lossy Stage B retrieval.
 //!
 //! The actionable output is the lowest `keep_ratio` at which answer-bearing content
 //! still survives — the gate for turning retrieval default-on. Network-free (recall

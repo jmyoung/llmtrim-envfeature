@@ -1,6 +1,6 @@
 //! Stage A — cache discipline (provider prefix caching). Lossless / opt-in.
 //!
-//! The #2 lever (spec §2): mark the invariant prefix (system prompt + tool schemas)
+//! The #2 lever: mark the invariant prefix (system prompt + tool schemas)
 //! with provider cache breakpoints so the prefix is billed once and reused across
 //! calls. On Anthropic this places `cache_control: {ephemeral}` (≤4 breakpoints); on
 //! OpenAI it's a no-op (the longest matching prefix is cached automatically).
@@ -85,8 +85,7 @@ fn sort_keys(v: &mut Value) {
             for child in map.values_mut() {
                 sort_keys(child);
             }
-            let mut entries: Vec<(String, Value)> =
-                std::mem::take(map).into_iter().collect();
+            let mut entries: Vec<(String, Value)> = std::mem::take(map).into_iter().collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             for (k, val) in entries {
                 map.insert(k, val);
@@ -237,7 +236,11 @@ mod tests {
         );
         run_cache_stage(&mut req, &OpenAiProvider);
         let tools = req.raw().get("tools").and_then(Value::as_array).unwrap();
-        assert_eq!(tools[0].pointer("/function/name").unwrap(), "apple", "tools sorted by name");
+        assert_eq!(
+            tools[0].pointer("/function/name").unwrap(),
+            "apple",
+            "tools sorted by name"
+        );
         assert_eq!(tools[1].pointer("/function/name").unwrap(), "zebra");
         let keys: Vec<&str> = tools[1]
             .pointer("/function/parameters")
@@ -257,7 +260,10 @@ mod tests {
         );
         run_cache_stage(&mut req, &OpenAiProvider);
         assert!(
-            req.raw().get("prompt_cache_key").and_then(Value::as_str).is_some(),
+            req.raw()
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .is_some(),
             "prompt_cache_key injected for OpenAI"
         );
     }

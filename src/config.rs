@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// The Stage D format legend, embedded at build time and injected into the prompt
-/// so the model can read the columnar encoding (spec §4: always include a legend).
+/// so the model can read the columnar encoding (always include a legend).
 /// Validated non-empty by `build.rs`.
 pub const FORMAT_LEGEND: &str = include_str!("../prompts/toon_legend.txt");
 

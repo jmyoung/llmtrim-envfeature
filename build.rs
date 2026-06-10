@@ -1,6 +1,6 @@
 //! Build script — validate and track embedded assets at build time.
 //!
-//! Mirrors RTK's `build.rs` discipline: fail the build early if a required prompt
+//! Fail the build early if a required prompt
 //! asset (the Stage D/F prompt fragments under `prompts/`) is missing or empty, and
 //! trigger a rebuild when one changes. The assets themselves are embedded in the
 //! binary via `include_str!` from `src/config.rs` and the stage modules.
@@ -15,6 +15,7 @@ const REQUIRED_ASSETS: &[&str] = &[
     "prompts/output_compact_code.txt",
     "prompts/output_token_budget.txt",
     "prompts/ngram_glossary.txt",
+    "prompts/jsoncrush_note.txt",
 ];
 
 fn main() {

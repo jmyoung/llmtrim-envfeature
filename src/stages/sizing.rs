@@ -2,7 +2,7 @@
 //!
 //! Replaces a blind keep-ratio with an information-saturation estimate: keep items
 //! until they stop adding new content, not a fixed fraction. Two deterministic
-//! signals, both dependency-light (no model, no embeddings — spec §5):
+//! signals, both dependency-light (no model, no embeddings):
 //!
 //! 1. **Unique-bigram saturation (Kneedle).** Walk the items in order, tracking the
 //!    cumulative set of distinct word-bigrams. Coverage rises fast then flattens once
@@ -160,7 +160,12 @@ mod tests {
     /// adds fresh bigrams — a ~linear coverage curve with no knee.
     fn diverse(n: usize) -> Vec<String> {
         (0..n)
-            .map(|i| (0..6).map(|j| format!("w{i}x{j}")).collect::<Vec<_>>().join(" "))
+            .map(|i| {
+                (0..6)
+                    .map(|j| format!("w{i}x{j}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .collect()
     }
 
@@ -186,10 +191,13 @@ mod tests {
     fn near_duplicate_spam_is_capped_by_clusters() {
         // One distinct line repeated 20×: a single SimHash cluster caps K low,
         // regardless of a generous max budget.
-        let v: Vec<String> = std::iter::repeat_n("WARN cache miss for user session".to_string(), 20)
-            .collect();
+        let v: Vec<String> =
+            std::iter::repeat_n("WARN cache miss for user session".to_string(), 20).collect();
         let k = optimal_keep(&as_refs(&v), 2, 15);
-        assert!(k <= 3, "20 near-identical lines collapse to ~1 cluster, got {k}");
+        assert!(
+            k <= 3,
+            "20 near-identical lines collapse to ~1 cluster, got {k}"
+        );
     }
 
     #[test]
@@ -197,7 +205,10 @@ mod tests {
         // Rich prefix, then redundant tail: knee lands early, so K is well under the
         // budget and under the all-diverse case.
         let mut v = diverse(4);
-        v.extend(std::iter::repeat_n("retry pending retry pending retry".to_string(), 16));
+        v.extend(std::iter::repeat_n(
+            "retry pending retry pending retry".to_string(),
+            16,
+        ));
         let saturating = optimal_keep(&as_refs(&v), 2, 18);
         let all_diverse = optimal_keep(&as_refs(&diverse(20)), 2, 18);
         assert!(
@@ -218,7 +229,10 @@ mod tests {
         // transition, not at either end.
         let curve = [0usize, 5, 9, 12, 13, 13, 13, 13];
         let knee = knee_index(&curve).expect("a concave curve has a knee");
-        assert!((2..=4).contains(&knee), "knee at the elbow region, got {knee}");
+        assert!(
+            (2..=4).contains(&knee),
+            "knee at the elbow region, got {knee}"
+        );
     }
 
     #[test]

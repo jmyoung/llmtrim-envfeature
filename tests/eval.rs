@@ -1,6 +1,6 @@
-//! §6 evaluation harness — input-side and output-side token savings, kept separate.
+//! Evaluation harness — input-side and output-side token savings, kept separate.
 //!
-//! Per spec §6 ("run input and output evals separately"), the input eval runs
+//! Input and output evals run separately: the input eval runs
 //! INPUT-side stages only (hygiene + serialize); the output-shaping terse
 //! instruction is excluded so it doesn't pollute the input measurement. All
 //! measurement uses the real tokenizer.
@@ -79,7 +79,7 @@ fn robustness_never_panics_on_edge_inputs() {
     assert!(llmtrim::compress_with_config("{not json", Some(ProviderKind::OpenAi), &cfg).is_err());
 }
 
-/// Stage D guardrail (spec §4): non-uniform / non-flat / too-small arrays must pass
+/// Stage D guardrail: non-uniform / non-flat / too-small arrays must pass
 /// through unchanged as JSON — never mis-encoded to TOON.
 #[test]
 fn guardrails_skip_unsafe_array_shapes() {

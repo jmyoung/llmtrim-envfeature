@@ -12,7 +12,7 @@ use llmtrim::config::DenseConfig;
 use serde_json::{Value, json};
 
 /// Input-side config: the terse output-shaping instruction is off so input savings
-/// measure cleanly (spec §6 runs input and output evals separately).
+/// measure cleanly (input and output evals run separately).
 pub fn input_only() -> DenseConfig {
     DenseConfig {
         output_control: false,

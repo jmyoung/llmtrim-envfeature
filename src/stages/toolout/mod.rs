@@ -16,9 +16,9 @@
 //! the `retrieve` stage). If the agent needs the dropped detail it re-runs the tool —
 //! fresher than a stored copy, and what a tool-using agent does naturally. Lossy,
 //! `InputTokens`-gated (reverts if it doesn't cut tokens), `Content`-scoped. Zero model
-//! calls (spec §5).
+//! calls.
 //!
-//! Note on universality (spec §5): the level/failure keywords scored below are tokens
+//! Note on universality: the level/failure keywords scored below are tokens
 //! *machine-emitted* by runtimes and build tools (`ERROR`, `FATAL`, `Traceback`,
 //! `panicked`), not human prose, so a fixed set is appropriate. Locale-specific terms
 //! from the user's request are handled by the query-overlap bonus, which is

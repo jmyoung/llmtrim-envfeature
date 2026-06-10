@@ -56,7 +56,7 @@ pub fn compress(text: &str, ctx: &Ctx, query: &HashSet<String>) -> Option<String
     Some(rebuild(&lines, &keep))
 }
 
-/// Errors-only mode (rtk-style): keep failure lines and their stack frames plus a count
+/// Errors-only mode: keep failure lines and their stack frames plus a count
 /// summary, drop everything else to positional elision markers. Far more aggressive than
 /// adaptive windowing. `None` when every line is a failure (nothing to strip).
 fn compress_errors_only(text: &str) -> Option<String> {
@@ -87,7 +87,7 @@ fn aggressive_keep(lines: &[&str]) -> Vec<bool> {
 }
 
 /// One-line level census prepended to the errors-only output, so the model still sees
-/// how much was dropped and at what severity (mirrors `rtk log`'s summary header).
+/// how much was dropped and at what severity.
 fn summary_line(lines: &[&str]) -> String {
     let (mut errors, mut warnings) = (0usize, 0usize);
     for l in lines {

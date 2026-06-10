@@ -1,11 +1,11 @@
 //! Per-stage gating: a transform only sticks if it earns its keep.
 //!
-//! This mirrors RTK's "filter failure returns raw output — never block the user",
-//! applied per stage. An [`GateKind::InputTokens`] transform that errors *or* fails
+//! The rule, applied per stage: a transform that fails returns the raw input —
+//! never block the user. An [`GateKind::InputTokens`] transform that errors *or* fails
 //! to reduce net input tokens is reverted, leaving the request exactly as it was.
 //! [`GateKind::OutputShaping`] transforms (Stage F) change request fields whose
 //! payoff is on the response side, so they are not gated on input tokens — their
-//! token win is validated out-of-band (spec §6: run input vs output evals
+//! token win is validated out-of-band (input and output evals run
 //! separately).
 
 use anyhow::Result;

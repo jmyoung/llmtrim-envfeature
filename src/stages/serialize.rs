@@ -1,6 +1,6 @@
 //! Stage D — columnar (TOON) serialization of uniform flat record arrays.
 //!
-//! Per spec §4 / *Notation Matters*: apply columnar encoding ONLY to flat, uniform
+//! Per *Notation Matters*: apply columnar encoding ONLY to flat, uniform
 //! arrays of records (array of objects, all-scalar values, identical key sets) —
 //! keep JSON for nested data and as the source of truth. When at least one segment
 //! is encoded, inject the format legend once so the model can read TOON. The token

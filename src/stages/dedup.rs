@@ -2,9 +2,9 @@
 //!
 //! Within a content segment, collapse repeated lines: an exact-duplicate line is
 //! kept once with a `[×N]` count — semantically lossless, the repetition count is
-//! preserved (mirrors RTK's log dedup). With `near`, lines within a small SimHash
+//! preserved. With `near`, lines within a small SimHash
 //! Hamming distance also collapse onto a representative (near-duplicate boilerplate
-//! / log spam). Static, no embeddings (spec §5). Per §5 the content is kept once
+//! / log spam). Static, no embeddings. The content is kept once
 //! and presented — never replaced by a `[REF:hash]` pointer.
 //!
 //! Off by default; InputTokens-gated, so it reverts if it doesn't reduce tokens.

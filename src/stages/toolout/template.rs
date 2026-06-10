@@ -20,7 +20,7 @@
 //! model reads the `[×N: …]` notation directly (self-descriptive, like Stage E's `[×N]`).
 //!
 //! Variable tokens are locale-independent (numbers, hex/UUID, ISO-8601 timestamps,
-//! IPv4, quoted strings), so masking is language-agnostic per spec §5.
+//! IPv4, quoted strings), so masking is language-agnostic.
 
 use once_cell::sync::Lazy;
 use regex::Regex;

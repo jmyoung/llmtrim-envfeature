@@ -3,8 +3,8 @@
 //! These transforms change request fields/instructions whose payoff is on the
 //! *response* side (fewer/cheaper output tokens), so they use the OutputShaping
 //! gate (always applied; never reverted on input tokens). Their output savings are
-//! validated out-of-band — recorded fixtures or the proxy phase — per spec §6,
-//! which requires input and output compression to be evaluated separately.
+//! validated out-of-band — recorded fixtures or the proxy phase — since input
+//! and output compression are evaluated separately.
 //!
 //! The `terse` instruction — concise, full sentences; clean, low garble risk; ~73%
 //! output cut in a live test. (`draft` below is a separate reasoning-scaffold tier.)
@@ -16,7 +16,7 @@ use crate::ir::Request;
 use crate::provider::Provider;
 
 /// `terse` tier: a small, fixed input cost for a real output-token reduction
-/// (output tokens cost ~3–5× input — spec §1).
+/// (output tokens cost ~3–5× input).
 // Instructions stay verbose on purpose: the bench showed a shorter instruction cuts a
 // few input tokens but is LESS forceful → the model rambles → far more output tokens.
 // Output costs ~3–5× input, so the instruction's small input cost buys a much larger

@@ -5,14 +5,14 @@
 <h1 align="center">llmtrim</h1>
 
 <p align="center">
-  <strong>Cut the whole LLM bill ~46% - input, output, and cache - with zero extra model calls.</strong>
+  <strong>Cut the whole LLM bill ~40% - input, output, and cache - with zero extra model calls.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml"><img src="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL v3"></a>
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
-  <img src="https://img.shields.io/badge/round--trip_cost-%E2%88%9246%25-2ea043" alt="round-trip cost saved">
+  <img src="https://img.shields.io/badge/round--trip_cost-%E2%88%9240%25-2ea043" alt="round-trip cost saved">
 </p>
 
 <p align="center">
@@ -30,35 +30,35 @@
 
 A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provider, answers unchanged, no model in the loop.**
 
-## 💸 −46% of the bill - measured live, not estimated
+## 💸 −40% of the bill - measured live, not estimated
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/fkiene/llmtrim/main/bench/frontier-light.svg">
-    <img src="https://raw.githubusercontent.com/fkiene/llmtrim/main/bench/frontier-dark.svg" alt="llmtrim cuts the LLM round-trip bill both ends: original $0.0167 vs llmtrim $0.0090, −46% cost (output −73%, input −24%) across 87 live A/B cases" width="840">
+    <img src="https://raw.githubusercontent.com/fkiene/llmtrim/main/bench/frontier-dark.svg" alt="llmtrim cuts the LLM round-trip bill both ends: original $0.0111 vs llmtrim $0.0067, −40% cost (output −74%, input −33%) across 127 live A/B cases" width="840">
   </picture>
 </p>
 
 <table align="center">
   <thead>
     <tr>
-      <th align="left">87 live A/B cases</th>
+      <th align="left">127 live A/B cases</th>
       <th align="right">original</th>
       <th align="right">compressed</th>
       <th align="right">saved</th>
     </tr>
   </thead>
   <tbody>
-    <tr><td>input tokens</td><td align="right">58,518</td><td align="right">44,379</td><td align="right"><b>−24%</b></td></tr>
-    <tr><td>output tokens</td><td align="right">27,588</td><td align="right">7,504</td><td align="right"><b>−73%</b></td></tr>
-    <tr><td>total tokens</td><td align="right">86,106</td><td align="right">51,883</td><td align="right"><b>−40%</b></td></tr>
-    <tr><td><b>round-trip cost</b></td><td align="right"><b>$0.0167</b></td><td align="right"><b>$0.0090</b></td><td align="right"><b>−46%</b></td></tr>
+    <tr><td>input tokens</td><td align="right">82,877</td><td align="right">55,623</td><td align="right"><b>−33%</b></td></tr>
+    <tr><td>output tokens</td><td align="right">32,234</td><td align="right">8,539</td><td align="right"><b>−74%</b></td></tr>
+    <tr><td>total tokens</td><td align="right">115,111</td><td align="right">64,162</td><td align="right"><b>−44%</b></td></tr>
+    <tr><td><b>round-trip cost</b></td><td align="right"><b>$0.0111</b></td><td align="right"><b>$0.0067</b></td><td align="right"><b>−40%</b></td></tr>
   </tbody>
 </table>
 
-Every case is sent twice: the original request and the compressed one. Both answers are scored and priced at real provider rates (`openai/gpt-oss-20b` via Groq).
+Every case is sent twice: the original request and the compressed one. Both answers are scored and priced at real provider rates (`openai/gpt-oss-20b` via Groq). No corpus loses quality: retention is ≥0pp on all eight (hotpotqa +4.9pp, humaneval +8.3pp).
 
-Pooled over 87 cases the win is both ends: input and output. Per-corpus deltas are noisy at n≈12; trust the pooled figure. [Methodology + per-corpus frontier →](bench/README.md)
+Pooled over 127 cases the win is both ends: input and output. Per-corpus deltas are noisy at n≈12; trust the pooled figure. [Methodology + per-corpus frontier →](bench/README.md)
 
 ## 🎯 Why llmtrim
 
@@ -139,7 +139,7 @@ llmtrim setup     # local CA + HTTPS_PROXY/NODE_EXTRA_CA_CERTS in your shell pro
   tool ──request──▶ LLM API                     tool ──request──▶ llmtrim ──compressed──▶ LLM API
    ▲                  │                           ▲                  │  (gate · stream)      │
    └──── response ────┘                           └──── response ────┴── pass-through ───────┘
-        full bill                                          −46% bill, answer unchanged
+        full bill                                          −40% bill, answer unchanged
 ```
 
 Open a new shell and your tools route through it. Then:

@@ -5,6 +5,12 @@
 cd "$(dirname "$0")/../.." || exit 1
 mkdir -p bench/results
 
+# The A/B compares llmtrim's IN-PROCESS compression against the true original request.
+# If the llmtrim daemon proxy is in the environment (`llmtrim setup` exports HTTPS_PROXY),
+# both arms get re-compressed in flight and the baseline arm is no longer original —
+# contaminating every number. Always bypass any proxy for the live calls.
+unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy
+
 run() { # corpus preset n
   echo "=== $1 ($2, n=$3) ==="
   cargo run -q --features live -- bench --corpus "bench/data/$1.jsonl" --preset "$2" --n "$3" \

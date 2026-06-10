@@ -128,11 +128,12 @@ enum Commands {
     /// Channel-aware: a binary install self-updates via the installer; cargo and
     /// Homebrew installs print their package manager's command.
     Update,
-    /// Show the savings dashboard
+    /// Show the savings dashboard + interceptor health
     ///
-    /// Savings from the ledger + interceptor state. Default: a snapshot; `--watch`
-    /// for a live view; `--daily/--weekly/--monthly` for time-series; `--json/--csv`
-    /// to export for scripts and dashboards.
+    /// Savings from the ledger, plus the health chain (daemon → port → env → CA →
+    /// traffic). Default: a snapshot, exiting 0 healthy / 1 stopped / 2 degraded;
+    /// `-q` for the health word only; `--watch` for a live view;
+    /// `--daily/--weekly/--monthly` for time-series; `--json/--csv` to export.
     #[command(visible_aliases = ["status", "gain"])]
     Monitor {
         /// Live refreshing dashboard (Ctrl-C to exit).
@@ -156,7 +157,15 @@ enum Commands {
         /// Emit CSV time-series instead of the dashboard.
         #[arg(long)]
         csv: bool,
+        /// Health only: print healthy|degraded|stopped and exit 0/2/1 (script-friendly).
+        #[arg(long, short, conflicts_with_all = ["watch", "daily", "weekly", "monthly", "json", "csv"])]
+        quiet: bool,
     },
+    /// Check the install end-to-end and explain anything broken
+    ///
+    /// Read-only diagnosis: binary, daemon, port, env wiring (persisted + this shell),
+    /// CA, autostart, ledger, version skew. Exits non-zero if any check fails.
+    Doctor,
     /// Run the interceptor at login (`--off` to disable)
     ///
     /// systemd (Linux) / launchd (macOS) / registry run-key (Windows).
@@ -446,7 +455,15 @@ fn run() -> Result<()> {
             monthly,
             json,
             csv,
-        } => run_monitor(watch, interval, daily, weekly, monthly, json, csv)?,
+            quiet,
+        } => run_monitor(watch, interval, daily, weekly, monthly, json, csv, quiet)?,
+        Commands::Doctor => {
+            let report = llmtrim::doctor::gather();
+            print!("{}", llmtrim::doctor::render(ui::color_stdout(), &report));
+            if report.problems > 0 {
+                std::process::exit(1);
+            }
+        }
         Commands::Autostart { off, port } => {
             llmtrim::autostart::configure(!off, port)?;
             let color = ui::color_stdout();
@@ -933,24 +950,50 @@ fn period_flag(daily: bool, weekly: bool, monthly: bool) -> Option<Period> {
     }
 }
 
-/// Interceptor daemon + CA state for the dashboard header.
-fn daemon_view() -> monitor::DaemonView {
+/// Daemon + wiring state for the dashboard's health chain: pidfile liveness, a real TCP
+/// probe of the port, the env-wired port, autostart, version skew, and the age of the
+/// last recorded request (from `summary`) — everything `status` needs to say *why*
+/// something is broken, not just that it is.
+fn daemon_view(summary: &llmtrim::tracking::Summary) -> monitor::DaemonView {
     use llmtrim::daemon;
     let ca_present = matches!(llmtrim::serve::ca_cert_path(), Ok(p) if p.exists());
+    let env_port = llmtrim::setup::configured_port();
+    let autostart = llmtrim::autostart::is_enabled();
+    let log_path = daemon::logfile().ok().map(|p| p.display().to_string());
+    let last_request = summary.last_ts.as_deref().and_then(daemon::human_age);
+    let binary_version = env!("CARGO_PKG_VERSION").to_string();
     match daemon::running() {
         Some(s) => monitor::DaemonView {
             running: true,
             pid: s.pid,
             port: s.port,
             uptime: daemon::human_uptime(daemon::uptime_secs(s.started_at)),
+            uptime_secs: daemon::uptime_secs(s.started_at),
             ca_present,
+            port_accepting: daemon::probe_port(s.port),
+            env_port,
+            autostart,
+            restarts: s.restarts,
+            version: s.version,
+            binary_version,
+            log_path,
+            last_request,
         },
         None => monitor::DaemonView {
             running: false,
             pid: 0,
             port: 0,
             uptime: String::new(),
+            uptime_secs: 0,
             ca_present,
+            port_accepting: false,
+            env_port,
+            autostart,
+            restarts: 0,
+            version: None,
+            binary_version,
+            log_path,
+            last_request,
         },
     }
 }
@@ -995,12 +1038,27 @@ fn model_views(tracker: &Tracker) -> Result<Vec<monitor::ModelView>> {
     Ok(models)
 }
 
-fn render_snapshot(tracker: &Tracker, color: bool) -> Result<String> {
+/// Today's priced saving (UTC), for the hero's recency anchor. `None` when nothing
+/// priced ran today — the dashboard hides the figure rather than showing $0.00.
+fn today_saved_usd(tracker: &Tracker) -> Option<f64> {
+    let models = tracker.by_model_today().ok()?;
+    cost_estimate(&models).map(|c| c.saved)
+}
+
+fn render_snapshot(tracker: &Tracker, color: bool) -> Result<(String, monitor::Health)> {
     let summary = tracker.summary()?;
     let models = model_views(tracker)?;
     let cost = monitor_cost(tracker);
-    let daemon = daemon_view();
-    let mut out = monitor::snapshot(color, Some(&daemon), &summary, &models, cost.as_ref());
+    let daemon = daemon_view(&summary);
+    let health = monitor::health(&daemon);
+    let mut out = monitor::snapshot(
+        color,
+        Some(&daemon),
+        &summary,
+        &models,
+        cost.as_ref(),
+        today_saved_usd(tracker),
+    );
     // Passive, cached (≤24h), opt-out update notice (LLMTRIM_NO_UPDATE_CHECK to disable).
     if let Some(v) = llmtrim::update::check(false) {
         out.push_str(&format!(
@@ -1008,7 +1066,7 @@ fn render_snapshot(tracker: &Tracker, color: bool) -> Result<String> {
             ui::paint(color, Tone::Accent, "↑")
         ));
     }
-    Ok(out)
+    Ok((out, health))
 }
 
 /// Live dashboard: clear + repaint each tick, with an input-token save-rate once we have
@@ -1026,7 +1084,7 @@ fn run_watch(tracker: &Tracker, interval: u64) -> Result<()> {
         } else {
             String::new()
         };
-        frame.push_str(&render_snapshot(tracker, color)?);
+        frame.push_str(&render_snapshot(tracker, color)?.0);
         if let Some(p) = prev {
             let rate = (summary.saved() - p) as f64 / interval as f64;
             // Only show the rate when traffic actually flowed this interval — a perpetual
@@ -1052,6 +1110,7 @@ fn run_watch(tracker: &Tracker, interval: u64) -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_monitor(
     watch: bool,
     interval: u64,
@@ -1060,10 +1119,21 @@ fn run_monitor(
     monthly: bool,
     json: bool,
     csv: bool,
+    quiet: bool,
 ) -> Result<()> {
     let tracker = Tracker::open().context("failed to open savings ledger")?;
 
-    // Time-series report / export.
+    // Health-only mode: one word + the health exit code, for scripts and prompts
+    // (`llmtrim status -q && …`).
+    if quiet {
+        let summary = tracker.summary()?;
+        let health = monitor::health(&daemon_view(&summary));
+        println!("{}", health.label());
+        std::process::exit(health.exit_code());
+    }
+
+    // Time-series report / export. Exports always exit 0: they are data queries, not
+    // health checks — scripts read `daemon.health` from the JSON instead.
     if let Some(period) = period_flag(daily, weekly, monthly) {
         let rows = tracker.by_period(period)?;
         if csv {
@@ -1071,9 +1141,16 @@ fn run_monitor(
         } else if json {
             let s = tracker.summary()?;
             let models = model_views(&tracker)?;
+            let daemon = daemon_view(&s);
             println!(
                 "{}",
-                monitor::export_json(&s, &models, monitor_cost(&tracker).as_ref(), &rows)
+                monitor::export_json(
+                    &s,
+                    &models,
+                    monitor_cost(&tracker).as_ref(),
+                    &rows,
+                    Some(&daemon)
+                )
             );
         } else {
             print!(
@@ -1092,9 +1169,16 @@ fn run_monitor(
         } else {
             let s = tracker.summary()?;
             let models = model_views(&tracker)?;
+            let daemon = daemon_view(&s);
             println!(
                 "{}",
-                monitor::export_json(&s, &models, monitor_cost(&tracker).as_ref(), &rows)
+                monitor::export_json(
+                    &s,
+                    &models,
+                    monitor_cost(&tracker).as_ref(),
+                    &rows,
+                    Some(&daemon)
+                )
             );
         }
         return Ok(());
@@ -1103,7 +1187,15 @@ fn run_monitor(
     if watch {
         run_watch(&tracker, interval.max(1))
     } else {
-        print!("{}", render_snapshot(&tracker, ui::color_stdout())?);
+        let (out, health) = render_snapshot(&tracker, ui::color_stdout())?;
+        print!("{out}");
+        // Propagate health as the exit code (0 healthy / 1 stopped / 2 degraded) so
+        // `llmtrim status && …` means "llmtrim is actually working".
+        if health != monitor::Health::Healthy {
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            std::process::exit(health.exit_code());
+        }
         Ok(())
     }
 }

@@ -15,6 +15,7 @@ pub mod bench;
 pub mod cache_zone;
 pub mod config;
 pub mod daemon;
+pub mod doctor;
 pub mod gate;
 pub mod ir;
 pub mod media;

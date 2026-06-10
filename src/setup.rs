@@ -75,7 +75,7 @@ pub fn resolve_port(explicit: Option<u16>, running: Option<u16>) -> Result<u16> 
 /// Extract the port from a local proxy URL embedded anywhere in `text` — i.e. the number
 /// right after `127.0.0.1:`. Lets us read back the port we previously wired into the env
 /// (the shell-profile block on POSIX, `HKCU\Environment\HTTPS_PROXY` on Windows). Pure.
-fn parse_proxy_port(text: &str) -> Option<u16> {
+pub(crate) fn parse_proxy_port(text: &str) -> Option<u16> {
     let after = text.split("127.0.0.1:").nth(1)?;
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
@@ -83,7 +83,8 @@ fn parse_proxy_port(text: &str) -> Option<u16> {
 
 /// The interceptor port currently wired into the environment, if any — read from the live env
 /// source for this platform (POSIX: the shell-profile block; Windows: `HKCU\Environment`).
-fn configured_port() -> Option<u16> {
+/// Public so `status`/`doctor` can compare the wired port against the daemon's.
+pub fn configured_port() -> Option<u16> {
     #[cfg(windows)]
     {
         user_env_key()

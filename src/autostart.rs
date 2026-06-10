@@ -25,6 +25,46 @@ pub fn configure(enable: bool, port: u16) -> Result<()> {
     }
 }
 
+/// Is run-at-login currently enabled? Read-only probe for `status`/`doctor` — checks the
+/// same canonical location `configure` writes (HKCU Run key / XDG desktop entry / launchd
+/// agent). `false` on any read failure: a probe must never error a status report.
+pub fn is_enabled() -> bool {
+    #[cfg(windows)]
+    {
+        use winreg::RegKey;
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ};
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(RUN_KEY, KEY_READ)
+            .and_then(|key| key.get_value::<String, _>(VALUE_NAME))
+            .is_ok()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("HOME")
+            .map(|home| is_enabled_in(std::path::Path::new(&home)))
+            .unwrap_or(false)
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
+    {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        let path = exe.to_string_lossy();
+        auto_launch::AutoLaunchBuilder::new()
+            .set_app_name("llmtrim")
+            .set_app_path(path.as_ref())
+            .build()
+            .and_then(|auto| auto.is_enabled())
+            .unwrap_or(false)
+    }
+}
+
+/// Inner seam for [`is_enabled`] on Linux: probe under `base` as the home directory.
+#[cfg(target_os = "linux")]
+fn is_enabled_in(base: &std::path::Path) -> bool {
+    xdg_autostart_dir(base).join("llmtrim.desktop").exists()
+}
+
 // ── Windows: HKCU\Software\Microsoft\Windows\CurrentVersion\Run ─────────────────
 
 #[cfg(windows)]
@@ -264,6 +304,19 @@ mod tests {
 
         configure_in(false, 8787, base).expect("disable");
         assert!(!file.exists(), ".desktop file still present after disable");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn is_enabled_in_tracks_configure_in() {
+        let dir = TempDir::new("probe");
+        let base = dir.path();
+
+        assert!(!is_enabled_in(base), "fresh home → not enabled");
+        configure_in(true, 8787, base).expect("enable");
+        assert!(is_enabled_in(base), "enabled after configure");
+        configure_in(false, 8787, base).expect("disable");
+        assert!(!is_enabled_in(base), "disabled after remove");
     }
 
     #[cfg(target_os = "linux")]

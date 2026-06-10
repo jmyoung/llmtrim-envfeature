@@ -130,6 +130,9 @@ pub struct Summary {
     pub avg_compress_micros: Option<f64>,
     /// Total cached input tokens reused (Anthropic prompt-cache hits) — the discounted prefix.
     pub cache_read_tokens: i64,
+    /// rfc3339 UTC timestamp of the most recent recorded request (`None` on an empty
+    /// ledger) — the end-to-end "traffic actually flows" signal for `status`.
+    pub last_ts: Option<String>,
 }
 
 impl Summary {
@@ -413,16 +416,18 @@ impl Tracker {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("failed to read provider summary")?;
 
-        // Mean compression overhead + total cached-prefix tokens reused. AVG/SUM ignore NULL
-        // (CLI rows / pre-feature ledgers); AVG returns NULL → None when nothing has it.
-        let (avg_compress_micros, cache_read_tokens): (Option<f64>, i64) = self
-            .conn
-            .query_row(
-                "SELECT AVG(compress_micros), COALESCE(SUM(cache_read_tokens), 0) FROM compressions",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .context("failed to summarize latency + cache")?;
+        // Mean compression overhead + total cached-prefix tokens reused + most recent ts.
+        // AVG/SUM ignore NULL (CLI rows / pre-feature ledgers); AVG returns NULL → None when
+        // nothing has it; MAX(ts) is a lexical max, correct because ts is rfc3339 UTC.
+        let (avg_compress_micros, cache_read_tokens, last_ts): (Option<f64>, i64, Option<String>) =
+            self.conn
+                .query_row(
+                    "SELECT AVG(compress_micros), COALESCE(SUM(cache_read_tokens), 0), MAX(ts)
+                     FROM compressions",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .context("failed to summarize latency + cache")?;
 
         Ok(Summary {
             events,
@@ -435,6 +440,7 @@ impl Tracker {
             output_events,
             avg_compress_micros,
             cache_read_tokens,
+            last_ts,
         })
     }
 
@@ -443,9 +449,22 @@ impl Tracker {
     /// before usage capture existed, so legacy ledgers still get a sane (slightly
     /// conservative) bill estimate instead of a full-rate one.
     pub fn by_model(&self) -> Result<Vec<ModelRow>> {
+        self.by_model_where("")
+    }
+
+    /// [`by_model`] restricted to rows recorded today (UTC) — prices the dashboard's
+    /// "today" figure. Same day bucketing as `by_period(Day)`: `ts` is rfc3339 UTC, so its
+    /// first 10 chars are the UTC date.
+    pub fn by_model_today(&self) -> Result<Vec<ModelRow>> {
+        self.by_model_where("WHERE substr(ts, 1, 10) = date('now')")
+    }
+
+    /// Shared query for [`by_model`]/[`by_model_today`]. `where_clause` is a static SQL
+    /// fragment chosen by the callers above, never user input.
+    fn by_model_where(&self, where_clause: &str) -> Result<Vec<ModelRow>> {
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT provider, model, COUNT(*),
                         COALESCE(SUM(input_before), 0),
                         COALESCE(SUM(input_after), 0),
@@ -456,8 +475,8 @@ impl Tracker {
                             MAX(input_after - COALESCE(cache_read_tokens, 0), 0))), 0),
                         COALESCE(SUM(CASE WHEN output_shaped = 1
                             THEN COALESCE(output_after, 0) ELSE 0 END), 0)
-                 FROM compressions GROUP BY provider, model ORDER BY provider, model",
-            )
+                 FROM compressions {where_clause} GROUP BY provider, model ORDER BY provider, model",
+            ))
             .context("failed to prepare model summary")?;
         let rows = stmt
             .query_map([], |row| {

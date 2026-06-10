@@ -13,13 +13,81 @@ use crate::ui::{self, Tone};
 
 // ── view models (built by main from the ledger/daemon/pricing) ──────────────────
 
-/// Interceptor daemon state for the header line.
+/// Interceptor daemon + wiring state for the header's health chain
+/// (daemon alive → port accepting → env wired → traffic flowing).
 pub struct DaemonView {
     pub running: bool,
     pub pid: u32,
     pub port: u16,
     pub uptime: String,
+    pub uptime_secs: i64,
     pub ca_present: bool,
+    /// TCP probe of the daemon's port (always `false` when not running) — a live pidfile
+    /// only proves the supervisor exists, not that the proxy is accepting.
+    pub port_accepting: bool,
+    /// Interceptor port wired into the persistent env (shell profile / registry), if any.
+    pub env_port: Option<u16>,
+    /// Run-at-login enabled.
+    pub autostart: bool,
+    /// Supervisor crash-restarts since the daemon started.
+    pub restarts: u32,
+    /// Version recorded in the daemon's pidfile (`None` = pre-field daemon).
+    pub version: Option<String>,
+    /// Version of the binary rendering this dashboard.
+    pub binary_version: String,
+    /// Daemon log path, shown when a check fails.
+    pub log_path: Option<String>,
+    /// Humanized age of the most recent ledger row ("4s ago"); `None` on an empty ledger.
+    pub last_request: Option<String>,
+}
+
+/// Overall install health, derived from [`DaemonView`] — also the `status` exit code,
+/// so scripts can gate on it (`llmtrim status -q && …`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// Running, port accepting, env wired to the daemon's port, CA present.
+    Healthy,
+    /// Something needs attention: running with a broken link (port dead, env missing or
+    /// pointing elsewhere, CA missing), or stopped with the env still wired — the latter
+    /// actively breaks LLM HTTPS on this machine.
+    Degraded,
+    /// Not running and not wired — a clean off state.
+    Stopped,
+}
+
+impl Health {
+    /// `systemctl is-active` convention: 0 healthy, non-zero otherwise; degraded gets its
+    /// own code so scripts can tell "off" from "broken".
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Health::Healthy => 0,
+            Health::Stopped => 1,
+            Health::Degraded => 2,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Health::Healthy => "healthy",
+            Health::Stopped => "stopped",
+            Health::Degraded => "degraded",
+        }
+    }
+}
+
+/// Derive overall health from the view (see [`Health`] for the rules).
+pub fn health(d: &DaemonView) -> Health {
+    if d.running {
+        if d.port_accepting && d.env_port == Some(d.port) && d.ca_present {
+            Health::Healthy
+        } else {
+            Health::Degraded
+        }
+    } else if d.env_port.is_some() {
+        Health::Degraded
+    } else {
+        Health::Stopped
+    }
 }
 
 /// Benchmark output-token reduction from llmtrim's A/B suite (see bench/README). The live
@@ -136,53 +204,174 @@ fn axis(color: bool, name: &str, before: i64, after: i64) -> String {
 
 // ── snapshot ────────────────────────────────────────────────────────────────────
 
-/// The savings dashboard: daemon header, a hero panel (cost / round-trip / requests),
-/// per-axis bars, and a per-model table. Returned as a string so the watch loop can
-/// repaint it atomically.
+/// The daemon header + health chain. Healthy links collapse to one calm dim line; every
+/// broken link gets its own warn line naming the fix, because `status`'s first job is
+/// answering "why is it broken?".
+fn render_header(color: bool, d: &DaemonView) -> String {
+    let mut o = String::new();
+    if d.running {
+        let mut meta = format!("pid {} · :{} · up {}", d.pid, d.port, d.uptime);
+        if let Some(v) = &d.version {
+            meta.push_str(&format!(" · v{v}"));
+        }
+        if d.autostart {
+            meta.push_str(" · autostart on");
+        }
+        o.push_str(&format!(
+            " {} {}  {}\n",
+            ui::paint(color, Tone::Accent, "llmtrim ●"),
+            ui::paint(color, Tone::Dim, "running"),
+            ui::paint(color, Tone::Dim, &meta),
+        ));
+
+        // The chain, healthy links first…
+        let env_ok = d.env_port == Some(d.port);
+        let mut ok_bits: Vec<String> = Vec::new();
+        if d.port_accepting {
+            ok_bits.push(format!("{} port", ui::OK));
+        }
+        if env_ok {
+            ok_bits.push(format!("{} env :{}", ui::OK, d.port));
+        }
+        if d.ca_present {
+            ok_bits.push(format!("{} ca", ui::OK));
+        }
+        ok_bits.push(match &d.last_request {
+            Some(age) => format!("last request {age}"),
+            None => "no requests yet".to_string(),
+        });
+        o.push_str(&ui::paint(
+            color,
+            Tone::Dim,
+            &format!("  {}\n", ok_bits.join("   ")),
+        ));
+
+        // …then one warn line per broken link, each naming its fix.
+        let log = d.log_path.as_deref().unwrap_or("~/.llmtrim/serve.log");
+        if !d.port_accepting {
+            o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!(
+                    "  {} port :{} not accepting connections — check log: {log}\n",
+                    ui::WARN, d.port
+                ),
+            ));
+        }
+        match d.env_port {
+            Some(p) if p != d.port => o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!(
+                    "  {} env points at :{p} but the daemon listens on :{} — run: llmtrim setup\n",
+                    ui::WARN, d.port
+                ),
+            )),
+            None => o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!(
+                    "  {} env not wired — traffic bypasses llmtrim; run: llmtrim setup\n",
+                    ui::WARN
+                ),
+            )),
+            _ => {}
+        }
+        if !d.ca_present {
+            o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!("  {} ca missing — run: llmtrim ca\n", ui::WARN),
+            ));
+        }
+        if let Some(v) = &d.version
+            && *v != d.binary_version
+        {
+            o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!(
+                    "  {} daemon is v{v}, binary is v{} — restart to update: llmtrim stop && llmtrim start\n",
+                    ui::WARN, d.binary_version
+                ),
+            ));
+        }
+        if d.restarts > 0 {
+            o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!(
+                    "  {} crashed and restarted {}× since start — check log: {log}\n",
+                    ui::WARN, d.restarts
+                ),
+            ));
+        }
+    } else if let Some(p) = d.env_port {
+        // Stopped with HTTPS_PROXY still wired: every LLM HTTPS call on this machine fails
+        // right now. Deliberately the loudest state in the dashboard.
+        o.push_str(&format!(
+            " {} {}\n",
+            ui::paint(color, Tone::Warn, "llmtrim ○ stopped"),
+            ui::paint(
+                color,
+                Tone::Warn,
+                &format!("— env still points at :{p}; LLM calls will fail until it runs")
+            ),
+        ));
+        o.push_str(&ui::paint(
+            color,
+            Tone::Dim,
+            "  fix: llmtrim start   (or llmtrim uninstall to unwire the env)\n",
+        ));
+    } else {
+        o.push_str(&format!(
+            " {} {}\n",
+            ui::paint(color, Tone::Dim, "llmtrim ○"),
+            ui::paint(color, Tone::Dim, "stopped — start: llmtrim setup"),
+        ));
+        if !d.ca_present {
+            o.push_str(&ui::paint(
+                color,
+                Tone::Warn,
+                &format!("  {} ca missing — run: llmtrim ca\n", ui::WARN),
+            ));
+        }
+    }
+    o
+}
+
+/// The savings dashboard: daemon header + health chain, a hero panel (cost / round-trip /
+/// requests), per-axis bars, and a per-model table. Returned as a string so the watch
+/// loop can repaint it atomically. `today_saved_usd` is the priced saving for today (UTC),
+/// shown next to the all-time hero when it is non-trivial.
 pub fn snapshot(
     color: bool,
     daemon: Option<&DaemonView>,
     s: &Summary,
     models: &[ModelView],
     cost: Option<&Cost>,
+    today_saved_usd: Option<f64>,
 ) -> String {
     let mut o = String::new();
 
-    // header — daemon state
     if let Some(d) = daemon {
-        if d.running {
-            o.push_str(&format!(
-                " {} {}  {}\n",
-                ui::paint(color, Tone::Accent, "llmtrim ●"),
-                ui::paint(color, Tone::Dim, "running"),
-                ui::paint(
-                    color,
-                    Tone::Dim,
-                    &format!("pid {} · :{} · up {}", d.pid, d.port, d.uptime)
-                ),
-            ));
-        } else {
-            o.push_str(&format!(
-                " {} {}\n",
-                ui::paint(color, Tone::Dim, "llmtrim ○"),
-                ui::paint(color, Tone::Dim, "stopped — start: llmtrim setup"),
-            ));
-        }
-        if !d.ca_present {
-            o.push_str(&ui::paint(
-                color,
-                Tone::Warn,
-                "  ca missing — run: llmtrim ca\n",
-            ));
-        }
+        o.push_str(&render_header(color, d));
     }
 
     if s.events == 0 {
-        o.push_str(&ui::paint(
-            color,
-            Tone::Dim,
-            "\n no activity yet — run `llmtrim setup`, then use your tools as normal.\n",
-        ));
+        // Diagnose, don't shrug: the empty ledger looks identical for "never set up",
+        // "set up but not wired", and "wired, just no traffic yet" — say which one it is.
+        let hint = match daemon {
+            Some(d) if d.running && d.env_port != Some(d.port) => {
+                "\n proxy is up but nothing routes through it — see the env warning above; \
+                 run `llmtrim setup`, then open a new terminal.\n"
+            }
+            Some(d) if d.running => {
+                "\n wired and waiting for the first request — use your tools as normal.\n"
+            }
+            _ => "\n no activity yet — run `llmtrim setup`, then use your tools as normal.\n",
+        };
+        o.push_str(&ui::paint(color, Tone::Dim, hint));
         return o;
     }
 
@@ -193,12 +382,21 @@ pub fn snapshot(
     // shaped — projecting it onto agent traffic (output left unshaped by design) would
     // overstate the number ~2.7×. We surface it separately, clearly labeled, below.
     let hero = match cost {
-        Some(c) => format!(
-            "{}   {} round-trip   {} requests",
-            ui::paint(color, Tone::Accent, &format!("${:.2} saved", c.saved)),
-            ui::paint(color, Tone::Bold, &format!("-{:.0}%", c.pct())),
-            ui::commas(s.events),
-        ),
+        Some(c) => {
+            // Anchor the all-time number in the present: "what did it do for me today?"
+            // Hidden when today has no priced saving — a perpetual $0.00 reads like fake data.
+            let today = today_saved_usd
+                .filter(|t| *t >= 0.005)
+                .map(|t| ui::paint(color, Tone::Dim, &format!(" · today ${t:.2}")))
+                .unwrap_or_default();
+            format!(
+                "{}{}   {} round-trip   {} requests",
+                ui::paint(color, Tone::Accent, &format!("${:.2} saved", c.saved)),
+                today,
+                ui::paint(color, Tone::Bold, &format!("-{:.0}%", c.pct())),
+                ui::commas(s.events),
+            )
+        }
         None => format!(
             "{}   {} requests",
             ui::paint(
@@ -390,8 +588,23 @@ pub fn export_json(
     models: &[ModelView],
     cost: Option<&Cost>,
     periods: &[PeriodRow],
+    daemon: Option<&DaemonView>,
 ) -> String {
     let v = json!({
+        "daemon": daemon.map(|d| json!({
+            "running": d.running,
+            "health": health(d).label(),
+            "pid": d.running.then_some(d.pid),
+            "port": d.running.then_some(d.port),
+            "uptime_secs": d.running.then_some(d.uptime_secs),
+            "port_accepting": d.port_accepting,
+            "env_port": d.env_port,
+            "autostart": d.autostart,
+            "restarts": d.restarts,
+            "version": d.version,
+            "binary_version": d.binary_version,
+        })),
+        "last_request_ts": s.last_ts,
         "requests": s.events,
         "input": { "before": s.input_before, "after": s.input_after, "saved_pct": s.saved_pct() },
         "output": { "before": s.output_before, "after": s.output_after,
@@ -444,6 +657,7 @@ mod tests {
             output_events: 1204,
             avg_compress_micros: Some(310.0),
             cache_read_tokens: 1_200_000,
+            last_ts: Some("2026-06-10T12:00:00+00:00".into()),
         }
     }
 
@@ -473,7 +687,7 @@ mod tests {
             spend: Some(6.0),
             out_spend: Some(0.0),
         }];
-        let out = snapshot(false, None, &summ(), &models, Some(&cost));
+        let out = snapshot(false, None, &summ(), &models, Some(&cost), None);
         // Headline shows the MEASURED input-side saving, not a projection that assumes shaping.
         assert!(
             out.contains("$12.47 saved"),
@@ -506,7 +720,7 @@ mod tests {
             net_saved: 10.0,
             out_spend_shaped: 5.0,
         };
-        let out = snapshot(false, None, &summ(), &[], Some(&cost));
+        let out = snapshot(false, None, &summ(), &[], Some(&cost), None);
         assert!(
             out.contains("$10.00 saved"),
             "headline = measured input saving"
@@ -547,7 +761,7 @@ mod tests {
             out_spend_shaped: 0.0,
         };
         assert!((c.projected_saved() - c.saved).abs() < 1e-9);
-        let out = snapshot(false, None, &summ(), &[], Some(&c));
+        let out = snapshot(false, None, &summ(), &[], Some(&c), None);
         assert!(!out.contains("more saved by output shaping"));
         assert!(
             out.contains("output shaping off for agent traffic"),
@@ -567,7 +781,7 @@ mod tests {
             net_saved: 25.0,
             out_spend_shaped: 0.0,
         };
-        let out = snapshot(false, None, &summ(), &[], Some(&c));
+        let out = snapshot(false, None, &summ(), &[], Some(&c), None);
         assert!(out.contains("$100.00 saved"), "hero keeps list-rate figure");
         assert!(
             out.contains("≈ $25.00 off your actual bill"),
@@ -579,19 +793,19 @@ mod tests {
             net_saved: 100.0,
             ..c
         };
-        let out = snapshot(false, None, &summ(), &[], Some(&same));
+        let out = snapshot(false, None, &summ(), &[], Some(&same), None);
         assert!(!out.contains("off your actual bill"));
     }
 
     #[test]
     fn snapshot_empty_ledger_guides_user() {
-        let out = snapshot(false, None, &Summary::default(), &[], None);
+        let out = snapshot(false, None, &Summary::default(), &[], None, None);
         assert!(out.contains("no activity yet"));
     }
 
     #[test]
     fn export_json_roundtrips() {
-        let out = export_json(&summ(), &[], None, &[]);
+        let out = export_json(&summ(), &[], None, &[], None);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["requests"], 1204);
         assert_eq!(v["cost"], serde_json::Value::Null);
@@ -610,5 +824,233 @@ mod tests {
         let out = export_csv(&rows);
         assert!(out.starts_with("period,requests,"));
         assert!(out.contains("2026-06-07,10,100,60,0,20"));
+    }
+
+    /// A fully healthy view; tests break one link at a time.
+    fn dv() -> DaemonView {
+        DaemonView {
+            running: true,
+            pid: 4242,
+            port: 8788,
+            uptime: "33m45s".into(),
+            uptime_secs: 2025,
+            ca_present: true,
+            port_accepting: true,
+            env_port: Some(8788),
+            autostart: true,
+            restarts: 0,
+            version: Some("0.1.0".into()),
+            binary_version: "0.1.0".into(),
+            log_path: Some("/home/u/.llmtrim/serve.log".into()),
+            last_request: Some("4s ago".into()),
+        }
+    }
+
+    #[test]
+    fn health_matrix() {
+        assert_eq!(health(&dv()), Health::Healthy);
+        // Running with any broken link → degraded.
+        for broken in [
+            DaemonView {
+                port_accepting: false,
+                ..dv()
+            },
+            DaemonView {
+                env_port: None,
+                ..dv()
+            },
+            DaemonView {
+                env_port: Some(8787),
+                ..dv()
+            },
+            DaemonView {
+                ca_present: false,
+                ..dv()
+            },
+        ] {
+            assert_eq!(health(&broken), Health::Degraded);
+        }
+        // Stopped + env still wired = active breakage, not a clean off state.
+        let stopped_wired = DaemonView {
+            running: false,
+            ..dv()
+        };
+        assert_eq!(health(&stopped_wired), Health::Degraded);
+        let stopped_clean = DaemonView {
+            running: false,
+            env_port: None,
+            ..dv()
+        };
+        assert_eq!(health(&stopped_clean), Health::Stopped);
+        // Exit codes follow the systemctl convention.
+        assert_eq!(Health::Healthy.exit_code(), 0);
+        assert_eq!(Health::Stopped.exit_code(), 1);
+        assert_eq!(Health::Degraded.exit_code(), 2);
+    }
+
+    #[test]
+    fn header_healthy_collapses_to_one_calm_line() {
+        let out = render_header(false, &dv());
+        assert!(out.contains("running"));
+        assert!(out.contains("✓ port") && out.contains("✓ env :8788") && out.contains("✓ ca"));
+        assert!(out.contains("last request 4s ago"));
+        assert!(out.contains("autostart on"));
+        assert!(out.contains("v0.1.0"));
+        assert!(!out.contains('⚠'), "healthy header has no warnings");
+    }
+
+    #[test]
+    fn header_warns_per_broken_link() {
+        let out = render_header(
+            false,
+            &DaemonView {
+                port_accepting: false,
+                ..dv()
+            },
+        );
+        assert!(out.contains("not accepting connections"));
+        assert!(out.contains("serve.log"), "points at the log");
+
+        let out = render_header(
+            false,
+            &DaemonView {
+                env_port: None,
+                ..dv()
+            },
+        );
+        assert!(out.contains("env not wired"));
+        assert!(out.contains("llmtrim setup"));
+
+        let out = render_header(
+            false,
+            &DaemonView {
+                env_port: Some(8787),
+                ..dv()
+            },
+        );
+        assert!(out.contains(":8787") && out.contains(":8788"), "names both ports");
+    }
+
+    #[test]
+    fn header_stopped_but_wired_is_loud() {
+        let out = render_header(
+            false,
+            &DaemonView {
+                running: false,
+                ..dv()
+            },
+        );
+        assert!(out.contains("LLM calls will fail"));
+        assert!(out.contains("llmtrim start"));
+        // Clean stop stays calm.
+        let out = render_header(
+            false,
+            &DaemonView {
+                running: false,
+                env_port: None,
+                ..dv()
+            },
+        );
+        assert!(out.contains("stopped — start: llmtrim setup"));
+        assert!(!out.contains("will fail"));
+    }
+
+    #[test]
+    fn header_flags_version_skew_and_restarts() {
+        let out = render_header(
+            false,
+            &DaemonView {
+                version: Some("0.0.9".into()),
+                ..dv()
+            },
+        );
+        assert!(out.contains("daemon is v0.0.9, binary is v0.1.0"));
+        assert!(out.contains("llmtrim stop && llmtrim start"));
+
+        let out = render_header(
+            false,
+            &DaemonView {
+                restarts: 3,
+                ..dv()
+            },
+        );
+        assert!(out.contains("restarted 3×"));
+
+        // A pre-version pidfile must not be flagged as skew (nothing to compare).
+        let out = render_header(
+            false,
+            &DaemonView {
+                version: None,
+                ..dv()
+            },
+        );
+        assert!(!out.contains("restart to update"));
+    }
+
+    #[test]
+    fn empty_ledger_diagnoses_why() {
+        // Running but unwired → say traffic bypasses, not a generic "run setup".
+        let unwired = DaemonView {
+            env_port: None,
+            ..dv()
+        };
+        let out = snapshot(false, Some(&unwired), &Summary::default(), &[], None, None);
+        assert!(out.contains("nothing routes through it"));
+
+        // Running and wired → it's just waiting; don't tell the user to re-setup.
+        let out = snapshot(false, Some(&dv()), &Summary::default(), &[], None, None);
+        assert!(out.contains("waiting for the first request"));
+
+        // Not installed at all → the original guidance.
+        let off = DaemonView {
+            running: false,
+            env_port: None,
+            ..dv()
+        };
+        let out = snapshot(false, Some(&off), &Summary::default(), &[], None, None);
+        assert!(out.contains("no activity yet"));
+    }
+
+    #[test]
+    fn hero_shows_today_when_priced() {
+        let cost = Cost {
+            saved: 100.0,
+            spend: 50.0,
+            out_spend: 0.0,
+            net_saved: 100.0,
+            out_spend_shaped: 0.0,
+        };
+        let out = snapshot(false, None, &summ(), &[], Some(&cost), Some(1.84));
+        assert!(out.contains("today $1.84"));
+        // A ~zero today figure is hidden — an idle proxy must not print "$0.00 today".
+        let out = snapshot(false, None, &summ(), &[], Some(&cost), Some(0.0));
+        assert!(!out.contains("today $"));
+        let out = snapshot(false, None, &summ(), &[], Some(&cost), None);
+        assert!(!out.contains("today $"));
+    }
+
+    #[test]
+    fn export_json_carries_daemon_health() {
+        let out = export_json(&summ(), &[], None, &[], Some(&dv()));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["daemon"]["running"], true);
+        assert_eq!(v["daemon"]["health"], "healthy");
+        assert_eq!(v["daemon"]["port"], 8788);
+        assert_eq!(v["daemon"]["env_port"], 8788);
+        assert_eq!(v["daemon"]["autostart"], true);
+        assert_eq!(v["daemon"]["restarts"], 0);
+        assert_eq!(v["last_request_ts"], "2026-06-10T12:00:00+00:00");
+
+        // Stopped: pid/port/uptime are null, health says so.
+        let stopped = DaemonView {
+            running: false,
+            env_port: None,
+            ..dv()
+        };
+        let out = export_json(&summ(), &[], None, &[], Some(&stopped));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["daemon"]["running"], false);
+        assert_eq!(v["daemon"]["health"], "stopped");
+        assert_eq!(v["daemon"]["pid"], serde_json::Value::Null);
     }
 }

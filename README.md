@@ -145,8 +145,9 @@ llmtrim setup     # local CA + HTTPS_PROXY/NODE_EXTRA_CA_CERTS in your shell pro
 Open a new shell and your tools route through it. Then:
 
 ```bash
-llmtrim monitor       # savings dashboard: ● running · $ saved · −% round-trip · by-model
+llmtrim status        # health + savings: ● running · ✓ port ✓ env ✓ ca · $ saved · by-model
 llmtrim monitor --watch   # live, refreshing - watch the bill shrink in real time
+llmtrim doctor        # something off? end-to-end diagnosis, each failing check names its fix
 llmtrim uninstall     # one command back out - reverses everything, transparently
 ```
 
@@ -165,7 +166,7 @@ llmtrim ca               # print the CA path + how to trust it system-wide (for 
 llmtrim monitor --daily  # time-series report (--weekly/--monthly); --json/--csv to export
 ```
 
-`monitor` is the one savings view: snapshot, `--watch`, `--daily/--weekly/--monthly`, and `--json/--csv` export (`status`/`gain` are aliases).
+`monitor` is the one savings view: snapshot, `--watch`, `--daily/--weekly/--monthly`, and `--json/--csv` export (`status`/`gain` are aliases). The snapshot doubles as a health check: it verifies the whole chain (daemon → port → env → CA → traffic) and exits 0 healthy / 1 stopped / 2 degraded; `status -q` prints just `healthy|degraded|stopped` for scripts, and the JSON export carries the same under `daemon.health`.
 
 Any tool honoring `HTTPS_PROXY` + an env CA works (every CLI agent, Node/VS Code). The host list comes from the [`llm_providers`](https://crates.io/crates/llm_providers) registry - OpenAI, Anthropic, Google, DeepSeek, Mistral, xAI, Moonshot, Zhipu, Qwen, MiniMax, Cerebras, OpenRouter, … - and updates with the crate. Pinned-cert tools (e.g. Copilot) can't be intercepted.
 

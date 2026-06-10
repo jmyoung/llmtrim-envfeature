@@ -980,6 +980,7 @@ mod imp {
                 fast_fails = 0;
             }
             eprintln!("llmtrim: restarting interceptor in 2s…");
+            crate::daemon::bump_restarts(); // surfaces as a `status` warning
             std::thread::sleep(Duration::from_secs(2));
         }
     }

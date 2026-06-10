@@ -15,6 +15,13 @@ pub struct DaemonState {
     pub port: u16,
     /// Unix seconds when the daemon started (for uptime).
     pub started_at: i64,
+    /// Version of the binary that spawned the daemon (`None` in pidfiles written
+    /// before this field existed) — lets `status` flag a stale daemon after `update`.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Crash-restarts the supervisor performed since start (0 = clean run).
+    #[serde(default)]
+    pub restarts: u32,
 }
 
 /// Base directory for llmtrim state (`$LLMTRIM_HOME` or `~/.llmtrim`). Falls back to
@@ -52,9 +59,24 @@ pub fn write_state(pid: u32, port: u16) -> Result<()> {
         pid,
         port,
         started_at: now_secs(),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        restarts: 0,
     };
     std::fs::write(pidfile()?, serde_json::to_string(&state)?)?;
     Ok(())
+}
+
+/// Bump the supervisor's crash-restart counter in the pidfile (best-effort: the counter
+/// is diagnostics for `status`, never worth failing a restart over).
+pub fn bump_restarts() {
+    if let Some(mut state) = read_state() {
+        state.restarts = state.restarts.saturating_add(1);
+        if let Ok(path) = pidfile()
+            && let Ok(json) = serde_json::to_string(&state)
+        {
+            let _ = std::fs::write(path, json);
+        }
+    }
 }
 
 /// The recorded daemon state, if the pidfile exists and parses.
@@ -133,6 +155,19 @@ pub fn uptime_secs(started_at: i64) -> i64 {
     (now_secs() - started_at).max(0)
 }
 
+/// Is anything accepting TCP on `127.0.0.1:port`? A live pidfile only proves the
+/// *supervisor* process exists — the proxy inside it can be crash-looping on a bind
+/// failure while `kill -0` stays green. One connect (~1ms, 300ms cap) closes that gap.
+pub fn probe_port(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
+        .map(|s| {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            true
+        })
+        .unwrap_or(false)
+}
+
 /// Spawn the interceptor as a detached background process, redirecting its output to the
 /// logfile and recording the pidfile. Returns the child pid.
 pub fn spawn_detached(port: u16) -> Result<u32> {
@@ -181,10 +216,26 @@ pub fn spawn_detached(port: u16) -> Result<u32> {
     let child = cmd.spawn().context("failed to spawn the interceptor")?;
     let pid = child.id();
     write_state(pid, port)?;
+    // Readiness: the proxy warms its tokenizer tables before binding (~2-3s), so returning
+    // at fork time makes an immediate `status` read "degraded" and an immediate request
+    // fail. Poll until the port accepts (10s cap) so success means "serving", not "forked".
+    for _ in 0..100 {
+        if probe_port(port) {
+            return Ok(pid);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!(
+        "llmtrim: interceptor spawned (pid {pid}) but :{port} is not accepting after 10s — \
+         check `llmtrim status` and the log"
+    );
     Ok(pid)
 }
 
 /// Stop the running daemon (SIGTERM) and clear the pidfile. Returns the stopped pid.
+/// Blocks until the process actually exits (5s cap): returning at signal time lets an
+/// immediate `start` race the dying daemon for the port — the new proxy hits
+/// EADDRINUSE, crash-restarts once, and `status` reports a crash we caused ourselves.
 pub fn stop() -> Result<Option<u32>> {
     let Some(state) = read_state() else {
         return Ok(None);
@@ -211,6 +262,18 @@ pub fn stop() -> Result<Option<u32>> {
                     .stderr(std::process::Stdio::null())
                     .status();
             }
+            for _ in 0..50 {
+                if !is_alive(state.pid) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if is_alive(state.pid) {
+                eprintln!(
+                    "llmtrim: pid {} still running 5s after the stop signal",
+                    state.pid
+                );
+            }
         }
     }
     let _ = std::fs::remove_file(pidfile()?);
@@ -229,6 +292,14 @@ pub fn human_uptime(secs: i64) -> String {
     }
 }
 
+/// Humanized age of an rfc3339 timestamp ("4s ago", "3h12m ago"); `None` if it doesn't
+/// parse. Clock skew putting it in the future clamps to "0s ago" rather than lying.
+pub fn human_age(rfc3339: &str) -> Option<String> {
+    let t = chrono::DateTime::parse_from_rfc3339(rfc3339).ok()?;
+    let secs = (chrono::Utc::now().timestamp() - t.timestamp()).max(0);
+    Some(format!("{} ago", human_uptime(secs)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +309,17 @@ mod tests {
         assert_eq!(human_uptime(42), "42s");
         assert_eq!(human_uptime(305), "5m05s");
         assert_eq!(human_uptime(3 * 3600 + 12 * 60), "3h12m");
+    }
+
+    #[test]
+    fn human_age_parses_and_clamps() {
+        let past = (chrono::Utc::now() - chrono::Duration::seconds(40)).to_rfc3339();
+        let s = human_age(&past).expect("parses");
+        assert!(s.ends_with(" ago"), "{s}");
+        // Future timestamps (clock skew) clamp to zero instead of going negative.
+        let future = (chrono::Utc::now() + chrono::Duration::seconds(120)).to_rfc3339();
+        assert_eq!(human_age(&future).expect("parses"), "0s ago");
+        assert_eq!(human_age("not a timestamp"), None);
     }
 
     #[test]
@@ -258,10 +340,33 @@ mod tests {
             pid: 123,
             port: 8787,
             started_at: 1000,
+            version: Some("0.1.0".into()),
+            restarts: 2,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: DaemonState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.pid, 123);
         assert_eq!(back.port, 8787);
+        assert_eq!(back.version.as_deref(), Some("0.1.0"));
+        assert_eq!(back.restarts, 2);
+    }
+
+    #[test]
+    fn state_parses_pre_version_pidfile() {
+        // Pidfiles written before version/restarts existed must still parse (upgrade path).
+        let back: DaemonState =
+            serde_json::from_str(r#"{"pid":9,"port":8787,"started_at":1000}"#).unwrap();
+        assert_eq!(back.version, None);
+        assert_eq!(back.restarts, 0);
+    }
+
+    #[test]
+    fn probe_port_detects_listener_and_absence() {
+        // Bind an ephemeral port → probe sees it; drop it → probe fails.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let port = listener.local_addr().expect("local addr").port();
+        assert!(probe_port(port));
+        drop(listener);
+        assert!(!probe_port(port));
     }
 }

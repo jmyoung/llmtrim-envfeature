@@ -59,6 +59,8 @@ A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provide
 
 Every case is sent twice: the original request and the compressed one. Both answers are scored and priced at real provider rates (`openai/gpt-oss-20b` via Groq). **Compression doesn't cost quality — pooled answer quality is +3.2pp (95% CI ±5.6, n=112)**: trimming the noise helps the model at least as often as it hurts (toolout +10pp, humaneval +8.3pp, hotpotqa +4.9pp; worst corpus is n=5 with a CI spanning zero).
 
+The −44% is measured on a budget model whose pricing is unusually input-heavy. Frontier models bill output 5× input, which is where llmtrim saves most (−75%): the **same measured token deltas re-priced at frontier rates project to −61% (GPT-4o) / −63% (Claude Sonnet 4.5)** — a projection (`bench/scripts/chart.py` prints it), not a separate live run.
+
 Pooled over 112 cases the win is both ends: input and output. Per-corpus deltas are noisy at n≈12; trust the pooled figure. [Methodology + per-corpus frontier →](bench/README.md)
 
 ## 🎯 Why llmtrim

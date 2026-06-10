@@ -10,6 +10,7 @@
 //! output cut in a live test. (`draft` below is a separate reasoning-scaffold tier.)
 
 use anyhow::Result;
+use serde_json::Value;
 
 use crate::gate::{GateKind, PlanEntry, Transform};
 use crate::ir::Request;
@@ -87,15 +88,23 @@ impl Transform for OutputControlStage {
         provider: &dyn Provider,
         _plan: &mut Vec<PlanEntry>,
     ) -> Result<()> {
-        provider.add_system_instruction(req, self.level.instruction());
-        if let Some(budget) = self.token_budget {
-            provider.add_system_instruction(
-                req,
-                &TOKEN_BUDGET_TMPL.replace("{budget}", &budget.to_string()),
-            );
-        }
-        if self.compact_code {
-            provider.add_system_instruction(req, COMPACT_CODE_INSTRUCTION);
+        // Tool-call-shaped request: the expected answer is a function-call payload, not
+        // prose. Prose-shaping instructions can't shrink call arguments — the live A/B's
+        // agent corpus saves 0.0% output tokens with them — so on the most-resent request
+        // shape (agent loops) they are pure input cost. Skip them; the hard `max_tokens`
+        // cap below stays (it costs nothing). `tool_choice: "none"` means the model is
+        // told NOT to call, so the answer is prose again and shaping applies.
+        if !tool_call_shaped(req) {
+            provider.add_system_instruction(req, self.level.instruction());
+            if let Some(budget) = self.token_budget {
+                provider.add_system_instruction(
+                    req,
+                    &TOKEN_BUDGET_TMPL.replace("{budget}", &budget.to_string()),
+                );
+            }
+            if self.compact_code {
+                provider.add_system_instruction(req, COMPACT_CODE_INSTRUCTION);
+            }
         }
         if let Some(cap) = self.max_tokens
             && provider.max_tokens(req).is_none()
@@ -106,6 +115,17 @@ impl Transform for OutputControlStage {
     }
 }
 
+/// True when the request carries a non-empty `tools` array and tool calling isn't
+/// disabled (`tool_choice: "none"`) — i.e. the answer is expected to be a tool call.
+/// Shared shape across OpenAI and Anthropic bodies (both use `tools`/`tool_choice`).
+fn tool_call_shaped(req: &Request) -> bool {
+    let raw = req.raw();
+    raw.get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty())
+        && raw.get("tool_choice").and_then(Value::as_str) != Some("none")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,7 +133,7 @@ mod tests {
     use crate::pipeline;
     use crate::provider::OpenAiProvider;
     use crate::tokenizer::counter_for;
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     fn run_one(body: Value, stage: OutputControlStage) -> Request {
         let mut req = Request::from_value(ProviderKind::OpenAi, body);
@@ -166,6 +186,61 @@ mod tests {
             .filter_map(|m| m.get("content").and_then(Value::as_str))
             .collect();
         assert!(joined.contains("120 tokens"), "soft budget injected");
+    }
+
+    #[test]
+    fn tool_call_request_skips_prose_shaping_but_keeps_cap() {
+        // tools present + tool_choice auto ⇒ the answer is a function call: no terse/budget
+        // instruction (pure input cost, 0% output saving on the agent corpus), but the free
+        // hard cap still applies.
+        let req = run_one(
+            json!({"messages":[{"role":"user","content":"book a flight"}],
+                   "tools":[{"type":"function","function":{"name":"book","parameters":{}}}],
+                   "tool_choice":"auto"}),
+            OutputControlStage {
+                level: OutputLevel::Terse,
+                max_tokens: Some(900),
+                token_budget: Some(120),
+                compact_code: true,
+            },
+        );
+        let joined: String = req
+            .raw()
+            .pointer("/messages")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|m| m.get("content").and_then(Value::as_str))
+            .collect();
+        assert!(
+            !joined.contains("concise") && !joined.contains("120 tokens"),
+            "no prose-shaping instructions on a tool-call request: {joined}"
+        );
+        assert_eq!(
+            req.raw()
+                .get("max_completion_tokens")
+                .and_then(Value::as_u64),
+            Some(900),
+            "hard cap still set (free)"
+        );
+    }
+
+    #[test]
+    fn tool_choice_none_restores_prose_shaping() {
+        // tools present but calling disabled ⇒ the answer is prose; shaping applies again.
+        let req = run_one(
+            json!({"messages":[{"role":"user","content":"book a flight"}],
+                   "tools":[{"type":"function","function":{"name":"book","parameters":{}}}],
+                   "tool_choice":"none"}),
+            OutputControlStage {
+                level: OutputLevel::Terse,
+                max_tokens: None,
+                token_budget: None,
+                compact_code: false,
+            },
+        );
+        let sys = req.get_str("/messages/0/content").unwrap();
+        assert!(sys.contains("concise"), "prose shaping applies: {sys}");
     }
 
     #[test]

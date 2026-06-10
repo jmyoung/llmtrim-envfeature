@@ -174,6 +174,19 @@ def main():
         open(os.path.join(HERE, f"frontier-{name}.svg"), "w").write(render(T, d))
     print(f"wrote frontier-dark.svg + frontier-light.svg "
           f"(cost −{d[6]:.0f}% · output −{d[7]:.0f}% · input −{d[8]:.0f}% · n={n})")
+    # Projection: the SAME measured token deltas, re-priced at frontier-model rates from
+    # the pinned snapshot. No new measurement — frontier models weight output (the −75%
+    # side) far more heavily than gpt-oss-20b does, so the cost % rises. Labeled as a
+    # projection wherever published; the hero number stays the measured one.
+    for fid in ("openai/gpt-4o", "anthropic/claude-sonnet-4.5"):
+        try:
+            fri, fro = model_rates(fid)
+        except Exception:
+            continue
+        pb = tin_b * fri + tout_b * fro
+        pa = tin_a * fri + tout_a * fro
+        if pb:
+            print(f"projection @ {fid} rates: cost −{pct(pb, pa):.0f}%")
 
 
 if __name__ == "__main__":

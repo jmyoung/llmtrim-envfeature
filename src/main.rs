@@ -279,6 +279,9 @@ fn run() -> Result<()> {
                     output_after: None,
                     compress_micros: None,
                     cache_read_tokens: None,
+                    fresh_input_tokens: None,
+                    cache_write_tokens: None,
+                    output_shaped: Some(result.output_shaped),
                 });
             }
 
@@ -318,6 +321,9 @@ fn run() -> Result<()> {
                         output_after,
                         compress_micros: None,
                         cache_read_tokens: None,
+                        fresh_input_tokens: None,
+                        cache_write_tokens: None,
+                        output_shaped: Some(result.output_shaped),
                     });
                 }
             }
@@ -951,11 +957,7 @@ fn daemon_view() -> monitor::DaemonView {
 
 fn monitor_cost(tracker: &Tracker) -> Option<monitor::Cost> {
     let models = tracker.by_model().ok()?;
-    cost_estimate(&models).map(|(saved, spend, out_spend)| monitor::Cost {
-        saved,
-        spend,
-        out_spend,
-    })
+    cost_estimate(&models)
 }
 
 /// Per-model rows for the breakdown, top 8 by request volume, priced where the registry
@@ -1106,29 +1108,71 @@ fn run_monitor(
     }
 }
 
-/// `(input savings, total spend, output spend)` in USD, priced per model via
-/// [`llm_prices`]. Savings = input tokens we cut × input price; total spend = the
-/// actual input_after + measured output, at those rates; output spend is the output slice
-/// of it, so the dashboard can project the output-side saving. `None` when no recorded model
+/// Per-provider `(cache_read, cache_write)` price multipliers vs the list input rate:
+/// Anthropic bills cache reads at 10% and cache writes at 125%; OpenAI bills cached
+/// prompt tokens at 50% (no write surcharge); Gemini implicit caching discounts cached
+/// tokens 75%. Unknown providers assume no discount, which collapses the net figure to
+/// the list-rate one instead of inventing a discount.
+fn cache_multipliers(provider: &str) -> (f64, f64) {
+    match provider {
+        "anthropic" => (0.10, 1.25),
+        "openai" => (0.50, 0.0),
+        "google" => (0.25, 0.0),
+        _ => (1.0, 0.0),
+    }
+}
+
+/// USD cost figures priced per model via [`llm_prices`], `None` when no recorded model
 /// is priced.
-fn cost_estimate(models: &[llmtrim::tracking::ModelRow]) -> Option<(f64, f64, f64)> {
-    let mut saved = 0.0;
-    let mut spend = 0.0;
-    let mut out_spend = 0.0;
+///
+/// - `saved`/`spend` value tokens at **list input rates** (tokens cut × input price; the
+///   compressed input_after + measured output). Consistent numerator/denominator — the
+///   headline basis.
+/// - `net_saved` re-prices the same measured saving against the **real bill**: the
+///   provider-reported usage split (fresh × 1.0 + cache writes × 1.25 + cache reads ×
+///   0.1, per provider) gives the actual input bill, and the counterfactual bill scales
+///   it by the measured compression ratio (same cache mix, prompt larger by `pct`):
+///   `net_saved = net_bill × pct / (1 − pct)`. On traffic with no cache usage this
+///   degrades exactly to the list-rate figure.
+/// - `out_spend_shaped` is the output spend from requests that actually carried the
+///   output-shaping instruction — the only spend the benchmark factor may be projected on.
+fn cost_estimate(models: &[llmtrim::tracking::ModelRow]) -> Option<monitor::Cost> {
+    let mut cost = monitor::Cost {
+        saved: 0.0,
+        spend: 0.0,
+        out_spend: 0.0,
+        net_saved: 0.0,
+        out_spend_shaped: 0.0,
+    };
     let mut matched = false;
     for m in models {
         let Some(model_id) = m.model.as_deref() else {
             continue;
         };
         if let Some((input_price, output_price)) = llm_prices(model_id) {
-            saved += (m.input_before - m.input_after).max(0) as f64 / 1_000_000.0 * input_price;
+            let delta = (m.input_before - m.input_after).max(0) as f64;
+            cost.saved += delta / 1_000_000.0 * input_price;
             let out = m.output_after as f64 / 1_000_000.0 * output_price;
-            spend += m.input_after as f64 / 1_000_000.0 * input_price + out;
-            out_spend += out;
+            cost.spend += m.input_after as f64 / 1_000_000.0 * input_price + out;
+            cost.out_spend += out;
+            cost.out_spend_shaped += m.output_after_shaped as f64 / 1_000_000.0 * output_price;
+
+            let (read_mult, write_mult) = cache_multipliers(&m.provider);
+            let net_bill = (m.fresh_input_est as f64
+                + m.cache_write as f64 * write_mult
+                + m.cache_read as f64 * read_mult)
+                / 1_000_000.0
+                * input_price;
+            let pct = if m.input_before > 0 {
+                (delta / m.input_before as f64).min(0.95)
+            } else {
+                0.0
+            };
+            cost.net_saved += net_bill * pct / (1.0 - pct);
             matched = true;
         }
     }
-    matched.then_some((saved, spend, out_spend))
+    matched.then_some(cost)
 }
 
 /// Per-1M-token `(input, output)` price for a model: the `llm_providers` registry first,

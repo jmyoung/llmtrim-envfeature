@@ -238,6 +238,9 @@ mod imp {
         /// The original (uncompressed) request, replayed verbatim if the upstream rejects
         /// our compressed version. The safety net: compression never breaks the call.
         original: Option<OriginalRequest>,
+        /// True when the *forwarded* body carried the output-shaping instruction (Stage F
+        /// ran and the compressed body was kept, not a passthrough/replay).
+        output_shaped: bool,
     }
 
     /// A verbatim copy of the client's request, for replay-on-error.
@@ -290,7 +293,17 @@ mod imp {
         false
     }
 
-    fn record_from(p: Pending, output_after: Option<i64>, cache_read: Option<i64>) -> Record {
+    /// Billing usage harvested from a captured response. All `None` when the response
+    /// never arrived / carried no usage.
+    #[derive(Default)]
+    struct ResponseUsage {
+        output_after: Option<i64>,
+        cache_read: Option<i64>,
+        fresh_input: Option<i64>,
+        cache_write: Option<i64>,
+    }
+
+    fn record_from(p: Pending, usage: ResponseUsage) -> Record {
         Record {
             provider: p.provider.as_str().to_string(),
             model: p.model,
@@ -299,9 +312,12 @@ mod imp {
             input_before: p.input_before,
             input_after: p.input_after,
             output_before: None,
-            output_after,
+            output_after: usage.output_after,
             compress_micros: Some(p.compress_micros),
-            cache_read_tokens: cache_read,
+            cache_read_tokens: usage.cache_read,
+            fresh_input_tokens: usage.fresh_input,
+            cache_write_tokens: usage.cache_write,
+            output_shaped: Some(p.output_shaped),
         }
     }
 
@@ -311,7 +327,7 @@ mod imp {
     fn rehydrate_response(bytes: &[u8], p: &Pending, ledger: &Sender<Record>) -> Vec<u8> {
         let original = bytes.to_vec();
         let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-            let _ = ledger.send(record_from(p.clone(), None, None));
+            let _ = ledger.send(record_from(p.clone(), ResponseUsage::default()));
             return original;
         };
         let answer = crate::provider::for_kind(p.provider).answer_text(&json);
@@ -326,7 +342,13 @@ mod imp {
         {
             set_answer(&mut json, p.provider, &expanded);
         }
-        let _ = ledger.send(record_from(p.clone(), out_tok, None));
+        let _ = ledger.send(record_from(
+            p.clone(),
+            ResponseUsage {
+                output_after: out_tok,
+                ..Default::default()
+            },
+        ));
         serde_json::to_vec(&json).unwrap_or(original)
     }
 
@@ -372,7 +394,7 @@ mod imp {
             // A compressed request whose response we never saw (connection dropped): still
             // record the input savings, with output unknown.
             if let Some(p) = self.pending.take() {
-                let _ = self.ledger.send(record_from(p, None, None));
+                let _ = self.ledger.send(record_from(p, ResponseUsage::default()));
             }
         }
     }
@@ -391,6 +413,26 @@ mod imp {
             _ctx: &HttpContext,
             req: Request<Body>,
         ) -> RequestOrResponse {
+            self.handle_request_inner(req).await
+        }
+
+        /// Tee the response: forward it to the client unchanged while accumulating a copy,
+        /// and once it finishes streaming, measure the output tokens and complete the ledger
+        /// record. Non-compressed requests (no `pending`) pass straight through.
+        async fn handle_response(
+            &mut self,
+            _ctx: &HttpContext,
+            res: Response<Body>,
+        ) -> Response<Body> {
+            self.handle_response_inner(res).await
+        }
+    }
+
+    impl Interceptor {
+        /// Body of `handle_request`, factored out so tests can call it directly without
+        /// constructing a `hudsucker::HttpContext` (which is `#[non_exhaustive]` and
+        /// cannot be instantiated outside the hudsucker crate).
+        async fn handle_request_inner(&mut self, req: Request<Body>) -> RequestOrResponse {
             let host = host_of(&req);
             // Vertex AI serves all three wire shapes on one host, keyed by the path; every other
             // host is host-derived. Either way the kind here is only the fallback — the body
@@ -438,8 +480,12 @@ mod imp {
                 Some((json, mut pending)) => {
                     // We changed the body — remember the original so we can replay it verbatim
                     // if the upstream rejects our compressed version (4xx/5xx). Compression must
-                    // never break the user's call.
-                    if let Some(host) = host.as_deref() {
+                    // never break the user's call. Passthrough rows (after == before: the
+                    // original was forwarded) get no replay copy — replaying an identical body
+                    // can't fix anything.
+                    if pending.input_after < pending.input_before
+                        && let Some(host) = host.as_deref()
+                    {
                         let path = parts.uri.path_and_query().map_or("/", |p| p.as_str());
                         pending.original = Some(OriginalRequest {
                             url: format!("https://{host}{path}"),
@@ -464,14 +510,9 @@ mod imp {
             Request::from_parts(parts, new_body).into()
         }
 
-        /// Tee the response: forward it to the client unchanged while accumulating a copy,
-        /// and once it finishes streaming, measure the output tokens and complete the ledger
-        /// record. Non-compressed requests (no `pending`) pass straight through.
-        async fn handle_response(
-            &mut self,
-            _ctx: &HttpContext,
-            res: Response<Body>,
-        ) -> Response<Body> {
+        /// Body of `handle_response`, factored out so tests can call it directly without
+        /// a `hudsucker::HttpContext`.
+        async fn handle_response_inner(&mut self, res: Response<Body>) -> Response<Body> {
             let Some(pending) = self.pending.take() else {
                 return res;
             };
@@ -491,9 +532,11 @@ mod imp {
                     "llmtrim: upstream {} on compressed request — replayed original (no compression this call)",
                     status.as_u16()
                 );
-                // Record the fall-back honestly: the original was sent, so zero savings.
-                let mut rec = record_from(pending, None, None);
+                // Record the fall-back honestly: the original was sent, so zero savings —
+                // and the original carried no shaping instruction either.
+                let mut rec = record_from(pending, ResponseUsage::default());
                 rec.input_after = rec.input_before;
+                rec.output_shaped = Some(false);
                 let _ = self.ledger.send(rec);
                 return replayed;
             }
@@ -573,10 +616,24 @@ mod imp {
         // Never forward a request larger than we received. On tiny or non-chat bodies (e.g.
         // token-count / auxiliary calls) the input-side stages can't offset the output-control
         // instruction's fixed cost, so the compressed form is a net token *increase*. Forward
-        // the original verbatim and record nothing — the "never a bigger bill" guarantee, and
-        // keeps non-wins out of the savings ledger.
+        // the original verbatim — the "never a bigger bill" guarantee — but still record the
+        // zero-savings row: the dashboard's request count and savings %s must describe ALL
+        // proxied chat traffic, not just the wins (else the % is a self-selected best case).
         if result.input_tokens_after >= result.input_tokens_before {
-            return None;
+            let pending = Pending {
+                provider: kind,
+                model: result.model.clone(),
+                tokenizer: result.tokenizer_label.clone(),
+                exact: result.tokenizer_exact,
+                input_before: result.input_tokens_before.0 as i64,
+                input_after: result.input_tokens_before.0 as i64,
+                compress_micros,
+                plan: String::new(),
+                original: None,
+                // The forwarded original carries no shaping instruction.
+                output_shaped: false,
+            };
+            return Some((text.to_string(), pending));
         }
         let pending = Pending {
             // The detected kind, not the host fallback — `handle_response` reads the response
@@ -590,6 +647,7 @@ mod imp {
             compress_micros,
             plan: serde_json::to_string(&result.plan).unwrap_or_default(),
             original: None,
+            output_shaped: result.output_shaped,
         };
         Some((result.request_json, pending))
     }
@@ -625,7 +683,18 @@ mod imp {
             // Cached-prefix tokens the provider served from its prompt cache (the discounted
             // resent context); `None` when the provider reports none.
             let cache_read = extract_cache_read(p.provider, &buf);
-            let _ = self.ledger.send(record_from(p, output_after, cache_read));
+            // Full-rate + cache-write input tokens — with `cache_read` these reconstruct the
+            // request's real input bill, which the dashboard's net-$ figures are priced from.
+            let (fresh_input, cache_write) = extract_input_usage(p.provider, &buf);
+            let _ = self.ledger.send(record_from(
+                p,
+                ResponseUsage {
+                    output_after,
+                    cache_read,
+                    fresh_input,
+                    cache_write,
+                },
+            ));
         }
     }
 
@@ -749,6 +818,89 @@ mod imp {
             }
         }
         best
+    }
+
+    /// Provider-reported `(fresh_input, cache_write)` tokens — the rest of the input bill
+    /// alongside `extract_cache_read`. Fresh = input billed at the full rate: Anthropic
+    /// `input_tokens` (already excludes cache read/write); OpenAI `prompt_tokens −
+    /// cached_tokens` and Google `promptTokenCount − cachedContentTokenCount` (theirs
+    /// include the cached share). Cache writes (surcharged 1.25×) only exist on Anthropic
+    /// (`cache_creation_input_tokens`). Mirrors the JSON/SSE walk of the other extractors.
+    fn extract_input_usage(provider: ProviderKind, body: &[u8]) -> (Option<i64>, Option<i64>) {
+        use serde_json::Value;
+        let Some(text) = std::str::from_utf8(body).ok() else {
+            return (None, None);
+        };
+        let from_value = |v: &Value| -> (Option<i64>, Option<i64>) {
+            match provider {
+                ProviderKind::Anthropic => {
+                    let at = |p: &str, q: &str| {
+                        v.pointer(p)
+                            .or_else(|| v.pointer(q))
+                            .and_then(Value::as_i64)
+                    };
+                    (
+                        at("/usage/input_tokens", "/message/usage/input_tokens"),
+                        at(
+                            "/usage/cache_creation_input_tokens",
+                            "/message/usage/cache_creation_input_tokens",
+                        ),
+                    )
+                }
+                ProviderKind::OpenAi => {
+                    let prompt = v
+                        .pointer("/usage/prompt_tokens") // Chat Completions
+                        .or_else(|| v.pointer("/usage/input_tokens")) // Responses
+                        .or_else(|| v.pointer("/response/usage/input_tokens"))
+                        .and_then(Value::as_i64);
+                    let cached = v
+                        .pointer("/usage/prompt_tokens_details/cached_tokens")
+                        .or_else(|| v.pointer("/usage/input_tokens_details/cached_tokens"))
+                        .or_else(|| v.pointer("/response/usage/input_tokens_details/cached_tokens"))
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    (prompt.map(|p| (p - cached).max(0)), None)
+                }
+                ProviderKind::Google => {
+                    let prompt = v
+                        .pointer("/usageMetadata/promptTokenCount")
+                        .and_then(Value::as_i64);
+                    let cached = v
+                        .pointer("/usageMetadata/cachedContentTokenCount")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    (prompt.map(|p| (p - cached).max(0)), None)
+                }
+            }
+        };
+        if text.trim_start().starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
+                return from_value(&v);
+            }
+            return (None, None);
+        }
+        // SSE: the final usage wins (Anthropic's `message_start` carries the input usage;
+        // later events may repeat it) — take the max seen, like the other extractors.
+        let (mut fresh, mut write): (Option<i64>, Option<i64>) = (None, None);
+        for line in text.lines() {
+            let Some(data) = line.trim_start().strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(data) {
+                let (f, w) = from_value(&v);
+                if let Some(n) = f {
+                    fresh = Some(fresh.map_or(n, |b| b.max(n)));
+                }
+                if let Some(n) = w {
+                    write = Some(write.map_or(n, |b| b.max(n)));
+                }
+            }
+        }
+        (fresh, write)
     }
 
     /// The text delta in one SSE event, per provider's streaming shape.
@@ -1383,10 +1535,7 @@ mod imp {
             use crate::config::DenseConfig;
             use crate::ir::ProviderKind;
             // 50 identical log lines: dedup should fire and compression should win.
-            let lines: String =
-                std::iter::repeat("ERROR database connection pool exhausted, retrying in 5s\n")
-                    .take(50)
-                    .collect();
+            let lines = "ERROR database connection pool exhausted, retrying in 5s\n".repeat(50);
             let body = serde_json::json!({
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": lines}]
@@ -1454,9 +1603,11 @@ mod imp {
             if let Some((compressed_json, pending)) =
                 compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi)
             {
-                // Net-win guard: the compressed body must be strictly smaller.
+                // compress_blocking now always returns Some for valid JSON, even on zero-savings
+                // inputs (the caller records the row; `input_after == input_before` means
+                // passthrough). Assert that we never *increase* the token count.
                 assert!(
-                    pending.input_after < pending.input_before,
+                    pending.input_after <= pending.input_before,
                     "compress_blocking must not increase token count ({} -> {})",
                     pending.input_before,
                     pending.input_after
@@ -1470,7 +1621,719 @@ mod imp {
                     "compress_blocking must leave `original` unset for the caller to fill"
                 );
             }
-            // None is also valid when the budget is very tight — just don't panic.
+            // None is returned only for non-JSON / non-UTF-8 input — not for zero-savings bodies.
+        }
+
+        // ── async handler tests ──────────────────────────────────────────────
+        //
+        // These call `handle_request_inner` / `handle_response_inner` directly
+        // (the thin wrappers introduced as testability seams) so we don't need to
+        // construct `hudsucker::HttpContext`, which is `#[non_exhaustive]`.
+
+        /// Build a minimal `Interceptor` wired to an in-process mpsc ledger.
+        /// Returns the handler and the receiver for asserting emitted records.
+        fn make_interceptor() -> (
+            Interceptor,
+            std::sync::mpsc::Receiver<crate::tracking::Record>,
+        ) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handler = Interceptor {
+                config: Arc::new(crate::config::DenseConfig::default()),
+                ledger: tx,
+                domains: Arc::new(intercept_domains().into_iter().collect()),
+                pending: None,
+            };
+            (handler, rx)
+        }
+
+        /// Build a POST `Request<Body>` with a JSON body directed at `uri`.
+        fn post_request(uri: &str, body: &str) -> Request<Body> {
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("valid request")
+        }
+
+        /// Spin up a stub HTTP/1.1 server on an ephemeral loopback port. It accepts
+        /// exactly one connection, reads (discards) the request, then writes the given
+        /// status line and response body. Returns the bound port immediately.
+        ///
+        /// Because `replay_original` calls `transport::forward_post` (blocking ureq),
+        /// the server is a plain `std::thread` — the OS TCP accept is the synchronization
+        /// primitive, no sleeps needed.
+        fn stub_http_server(status_line: &str, response_body: &str) -> u16 {
+            use std::io::{Read, Write};
+            use std::net::TcpListener;
+
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let port = listener.local_addr().expect("local addr").port();
+            let status_line = status_line.to_string();
+            let response_body = response_body.to_string();
+            std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    // Drain request headers so ureq doesn't see ECONNRESET before reading
+                    // the response; read until the blank-line header terminator.
+                    let mut buf = [0u8; 4096];
+                    let mut acc: Vec<u8> = Vec::new();
+                    loop {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                acc.extend_from_slice(&buf[..n]);
+                                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let cl = response_body.len();
+                    let response = format!(
+                        "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {cl}\r\nConnection: close\r\n\r\n{response_body}"
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            port
+        }
+
+        /// Consume a `Body` to completion and return the collected bytes.
+        async fn drain_body(body: Body) -> Vec<u8> {
+            use http_body_util::BodyExt;
+            body.collect()
+                .await
+                .map(|c| c.to_bytes().to_vec())
+                .unwrap_or_default()
+        }
+
+        // Test 1: compression path ────────────────────────────────────────────
+
+        /// `handle_request_inner` must compress a compressible body, set `pending` with
+        /// `input_after < input_before`, stash `pending.original`, and return a smaller
+        /// valid-JSON request body.
+        #[tokio::test]
+        async fn handle_request_inner_compresses_body_and_sets_pending() {
+            let (mut handler, rx) = make_interceptor();
+
+            // 50 duplicate log lines: dedup fires, net token win guaranteed.
+            let log = "ERROR pool exhausted, retrying in 5s\n".repeat(50);
+            let input_json = serde_json::json!({
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": log}]
+            })
+            .to_string();
+            let input_len = input_json.len();
+
+            let req = post_request("https://api.openai.com/v1/chat/completions", &input_json);
+            let result = handler.handle_request_inner(req).await;
+
+            // Must be a Request (forwarded compressed), not a short-circuit Response.
+            let RequestOrResponse::Request(out_req) = result else {
+                panic!("handle_request_inner returned a Response, expected a compressed Request");
+            };
+
+            // pending must be set: compression happened.
+            let pending = handler
+                .pending
+                .as_ref()
+                .expect("pending must be set after a compressible request");
+
+            assert!(
+                pending.input_after < pending.input_before,
+                "input_after ({}) must be < input_before ({})",
+                pending.input_after,
+                pending.input_before
+            );
+
+            // The original body must be stashed for replay.
+            let orig = pending
+                .original
+                .as_ref()
+                .expect("original must be stashed in pending");
+            assert_eq!(
+                orig.body,
+                input_json.as_bytes(),
+                "stashed original must equal the pre-compression bytes"
+            );
+
+            // Outbound body must be valid JSON and smaller.
+            let out_body = drain_body(out_req.into_body()).await;
+            serde_json::from_slice::<serde_json::Value>(&out_body)
+                .expect("compressed request body must be valid JSON");
+            assert!(
+                out_body.len() < input_len,
+                "compressed body ({} bytes) must be smaller than original ({input_len} bytes)",
+                out_body.len()
+            );
+
+            // No ledger record from handle_request_inner alone.
+            assert!(
+                rx.try_recv().is_err(),
+                "no ledger record must be emitted from handle_request_inner alone"
+            );
+        }
+
+        // Test 2: non-compressible path ───────────────────────────────────────
+
+        /// A request to `/v1/embeddings` must pass through verbatim; `pending` stays None.
+        #[tokio::test]
+        async fn handle_request_inner_passes_embeddings_verbatim() {
+            let (mut handler, _rx) = make_interceptor();
+            let body = r#"{"model":"text-embedding-3-small","input":"hello world"}"#;
+            let req = post_request("https://api.openai.com/v1/embeddings", body);
+
+            let result = handler.handle_request_inner(req).await;
+
+            let RequestOrResponse::Request(out_req) = result else {
+                panic!("expected passthrough Request, got Response");
+            };
+            assert!(
+                handler.pending.is_none(),
+                "pending must remain None for a non-compressible path"
+            );
+            let out_body = drain_body(out_req.into_body()).await;
+            assert_eq!(out_body, body.as_bytes());
+        }
+
+        // Test 3: replay on 400 ───────────────────────────────────────────────
+
+        /// When the upstream returns 400 on a compressed request, `handle_response_inner`
+        /// must replay the original and return the replayed response. The ledger record
+        /// must show zero savings (input_after == input_before).
+        #[tokio::test]
+        async fn handle_response_inner_replays_original_on_400() {
+            let replay_body = r#"{"error":{"message":"replayed ok"}}"#;
+            let port = stub_http_server("HTTP/1.1 200 OK", replay_body);
+            let (mut handler, rx) = make_interceptor();
+
+            let original_body =
+                br#"{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}"#;
+            handler.pending = Some(Pending {
+                provider: ProviderKind::OpenAi,
+                model: Some("gpt-4o".to_string()),
+                tokenizer: "tiktoken".to_string(),
+                exact: true,
+                input_before: 100,
+                input_after: 60,
+                compress_micros: 1_000,
+                plan: "[]".to_string(),
+                original: Some(OriginalRequest {
+                    url: format!("http://127.0.0.1:{port}/v1/chat/completions"),
+                    headers: vec![("content-type".to_string(), "application/json".to_string())],
+                    body: original_body.to_vec(),
+                }),
+                output_shaped: false,
+            });
+
+            let bad_resp = Response::builder()
+                .status(400)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"error":"bad request"}"#))
+                .expect("build 400");
+
+            let out = handler.handle_response_inner(bad_resp).await;
+
+            // Replay succeeded: status is what the stub server returned (200).
+            assert_eq!(
+                out.status().as_u16(),
+                200,
+                "replayed response must carry the stub's status, not the original 400"
+            );
+            let body_bytes = drain_body(out.into_body()).await;
+            assert_eq!(
+                body_bytes,
+                replay_body.as_bytes(),
+                "replayed body must be the stub server's response verbatim"
+            );
+
+            // Zero savings recorded.
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("ledger must receive one record after replay");
+            assert_eq!(
+                rec.input_after, rec.input_before,
+                "replay records zero savings (input_after == input_before)"
+            );
+            assert_eq!(rec.provider, "openai");
+            assert!(rx.try_recv().is_err(), "exactly one record after replay");
+        }
+
+        // Test 4: 400 without original does not loop ──────────────────────────
+
+        /// When `pending.original` is None, a 400 must NOT attempt replay. The response
+        /// passes through to the SSE tee path; Finalize emits one record.
+        #[tokio::test]
+        async fn handle_response_inner_400_without_original_does_not_replay() {
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::OpenAi,
+                model: None,
+                tokenizer: "tiktoken".to_string(),
+                exact: true,
+                input_before: 50,
+                input_after: 30,
+                compress_micros: 500,
+                plan: "[]".to_string(),
+                original: None,
+                output_shaped: false,
+            });
+
+            let bad_resp = Response::builder()
+                .status(400)
+                .body(Body::from(r#"{"error":"bad"}"#))
+                .expect("build 400");
+
+            let out = handler.handle_response_inner(bad_resp).await;
+
+            assert_eq!(
+                out.status().as_u16(),
+                400,
+                "without original, 400 must be forwarded as-is"
+            );
+
+            // Drain so Finalize drops and emits the record.
+            let _ = drain_body(out.into_body()).await;
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Finalize emits a record even on a 400 passthrough");
+            assert_eq!(rec.provider, "openai");
+        }
+
+        // Test 5: 422 triggers replay ─────────────────────────────────────────
+
+        /// 422 Unprocessable Entity must also trigger replay.
+        #[tokio::test]
+        async fn handle_response_inner_replays_original_on_422() {
+            let replay_body = r#"{"id":"msg_ok"}"#;
+            let port = stub_http_server("HTTP/1.1 201 Created", replay_body);
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::Anthropic,
+                model: Some("claude-opus-4-5".to_string()),
+                tokenizer: "approx".to_string(),
+                exact: false,
+                input_before: 200,
+                input_after: 120,
+                compress_micros: 2_000,
+                plan: "[]".to_string(),
+                original: Some(OriginalRequest {
+                    url: format!("http://127.0.0.1:{port}/v1/messages"),
+                    headers: vec![],
+                    body: b"{}".to_vec(),
+                }),
+                output_shaped: false,
+            });
+
+            let unprocessable = Response::builder()
+                .status(422)
+                .body(Body::from(r#"{"type":"error"}"#))
+                .expect("build 422");
+
+            let out = handler.handle_response_inner(unprocessable).await;
+
+            assert_eq!(out.status().as_u16(), 201, "stub returned 201");
+            let body_bytes = drain_body(out.into_body()).await;
+            assert_eq!(body_bytes, replay_body.as_bytes());
+
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("record after 422 replay");
+            assert_eq!(
+                rec.input_after, rec.input_before,
+                "422 replay => zero savings"
+            );
+            assert!(rx.try_recv().is_err(), "exactly one record on 422 replay");
+        }
+
+        // Test 6: non-replay statuses pass through ────────────────────────────
+
+        /// 429 and 5xx must NOT trigger replay. The response streams through and
+        /// Finalize records real (non-zeroed) savings.
+        #[tokio::test]
+        async fn handle_response_inner_non_replay_statuses_pass_through() {
+            for status in [429u16, 500, 503] {
+                let (mut handler, rx) = make_interceptor();
+
+                handler.pending = Some(Pending {
+                    provider: ProviderKind::OpenAi,
+                    model: None,
+                    tokenizer: "tiktoken".to_string(),
+                    exact: true,
+                    input_before: 100,
+                    input_after: 60,
+                    compress_micros: 1_000,
+                    plan: "[]".to_string(),
+                    original: Some(OriginalRequest {
+                        // Port 1 has nothing listening; replay would fail if attempted.
+                        url: "http://127.0.0.1:1".to_string(),
+                        headers: vec![],
+                        body: b"{}".to_vec(),
+                    }),
+                    output_shaped: false,
+                });
+
+                let resp = Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"error":{status}}}"#)))
+                    .expect("build response");
+
+                let out: Response<Body> = handler.handle_response_inner(resp).await;
+                assert_eq!(
+                    out.status().as_u16(),
+                    status,
+                    "status {status} must pass through without replay"
+                );
+
+                let _ = drain_body(out.into_body()).await;
+
+                let rec = rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("Finalize record");
+                assert_eq!(
+                    rec.input_before, 100,
+                    "status {status}: input_before must be from compressed pending"
+                );
+                assert_eq!(
+                    rec.input_after, 60,
+                    "status {status}: input_after must be from compressed pending"
+                );
+                assert!(rx.try_recv().is_err(), "exactly one record for {status}");
+            }
+        }
+
+        // Test 7: SSE tee — Finalize fires exactly once ───────────────────────
+
+        /// A 200 SSE response must stream through byte-for-byte; Finalize must emit
+        /// exactly one record (with measured output tokens) after body consumed.
+        /// Synchronization is via body consumption — no sleeps.
+        #[tokio::test]
+        async fn handle_response_inner_sse_tee_finalize_runs_exactly_once() {
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::OpenAi,
+                model: Some("gpt-4o".to_string()),
+                tokenizer: "tiktoken".to_string(),
+                exact: true,
+                input_before: 300,
+                input_after: 180,
+                compress_micros: 5_000,
+                plan: "[]".to_string(),
+                original: None,
+                output_shaped: false,
+            });
+
+            let sse_chunks = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                "data: {\"usage\":{\"completion_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            );
+
+            let resp = Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from(sse_chunks))
+                .expect("build SSE response");
+
+            let out: Response<Body> = handler.handle_response_inner(resp).await;
+
+            assert_eq!(out.status().as_u16(), 200);
+            assert!(
+                handler.pending.is_none(),
+                "pending must be taken by handle_response_inner"
+            );
+
+            // Consuming the body drops the tee stream's `Finalize`.
+            let out_bytes = drain_body(out.into_body()).await;
+
+            assert_eq!(
+                out_bytes,
+                sse_chunks.as_bytes(),
+                "SSE body must pass through byte-for-byte"
+            );
+
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Finalize must emit exactly one record after body consumed");
+
+            assert_eq!(
+                rec.output_after,
+                Some(7),
+                "Finalize must extract completion_tokens from the SSE usage event"
+            );
+            assert_eq!(rec.input_before, 300);
+            assert_eq!(rec.input_after, 180);
+            assert_eq!(rec.provider, "openai");
+            assert!(rx.try_recv().is_err(), "Finalize emits exactly one record");
+        }
+
+        // Test 8: passthrough when no pending ─────────────────────────────────
+
+        /// When `self.pending` is None, `handle_response_inner` must be a pure
+        /// passthrough — no body modification, no ledger record.
+        #[tokio::test]
+        async fn handle_response_inner_passthrough_when_no_pending() {
+            let (mut handler, rx) = make_interceptor();
+
+            let resp = Response::builder()
+                .status(200)
+                .body(Body::from("some upstream body"))
+                .expect("build response");
+
+            let out: Response<Body> = handler.handle_response_inner(resp).await;
+
+            assert_eq!(out.status().as_u16(), 200);
+            let body = drain_body(out.into_body()).await;
+            assert_eq!(body, b"some upstream body");
+            assert!(
+                rx.try_recv().is_err(),
+                "no ledger record for a passthrough response"
+            );
+        }
+
+        // Test 9: SSE events split across chunk boundaries ────────────────────
+
+        /// The tee accumulates bytes across all frames into `acc` before extraction.
+        /// Usage extraction must succeed even when a `data:` event is split across
+        /// multiple network chunks (mid-field) and when a multi-byte UTF-8 scalar is
+        /// split across frames. The client must receive every byte verbatim in order,
+        /// and exactly one ledger record must be emitted.
+        #[tokio::test]
+        async fn handle_response_inner_sse_split_across_chunk_boundaries() {
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::OpenAi,
+                model: Some("gpt-4o".to_string()),
+                tokenizer: "tiktoken".to_string(),
+                exact: true,
+                input_before: 200,
+                input_after: 120,
+                compress_micros: 3_000,
+                plan: "[]".to_string(),
+                original: None,
+                output_shaped: false,
+            });
+
+            // The complete SSE payload.
+            let full_sse = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: {\"usage\":{\"completion_tokens\":7}}\n\n",
+                "data: [DONE]\n\n",
+            );
+
+            // Split the SSE bytes so the usage event straddles two chunks:
+            //   chunk 0 ends at: …"completion_to
+            //   chunk 1 starts:  kens":7}}\n\n…
+            // The accumulator collects both before extraction, so the full `data:` line
+            // is present and parseable — this is the contract we assert.
+            let split_at = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".len()
+                + "data: {\"usage\":{\"completion_to".len();
+            let (head, tail) = full_sse.as_bytes().split_at(split_at);
+
+            // Two extra chunks carry a UTF-8 multibyte scalar (U+00E9 = é, 0xC3 0xA9)
+            // split across frame boundaries — exercises the byte-stream path without
+            // affecting usage extraction (these bytes sit outside any `data:` event).
+            let extra_byte_1: &[u8] = &[0xC3]; // first byte of é
+            let extra_byte_2: &[u8] = &[0xA9]; // second byte of é
+
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::copy_from_slice(head)),
+                Ok(bytes::Bytes::copy_from_slice(tail)),
+                Ok(bytes::Bytes::copy_from_slice(extra_byte_1)),
+                Ok(bytes::Bytes::copy_from_slice(extra_byte_2)),
+            ];
+            let stream = hudsucker::futures::stream::iter(chunks);
+            let resp = Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .expect("build split-chunk SSE response");
+
+            let out: Response<Body> = handler.handle_response_inner(resp).await;
+
+            assert_eq!(out.status().as_u16(), 200);
+            assert!(
+                handler.pending.is_none(),
+                "pending must be taken by handle_response_inner"
+            );
+
+            // Drain — triggers Finalize::drop once all frames are consumed.
+            let out_bytes = drain_body(out.into_body()).await;
+
+            // (a) Client receives every byte verbatim in order.
+            let mut expected = Vec::new();
+            expected.extend_from_slice(full_sse.as_bytes());
+            expected.extend_from_slice(extra_byte_1);
+            expected.extend_from_slice(extra_byte_2);
+            assert_eq!(
+                out_bytes, expected,
+                "client must receive all bytes verbatim, in order, across chunk boundaries"
+            );
+
+            // (b) Finalize reassembles the full accumulator and finds completion_tokens.
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Finalize must emit one record after body consumed");
+            assert_eq!(
+                rec.output_after,
+                Some(7),
+                "completion_tokens must be extracted even when the usage event was split across chunks"
+            );
+            assert_eq!(rec.input_before, 200);
+            assert_eq!(rec.input_after, 120);
+            assert_eq!(rec.provider, "openai");
+
+            // (c) Exactly one record.
+            assert!(
+                rx.try_recv().is_err(),
+                "exactly one ledger record must be emitted"
+            );
+        }
+
+        // Test 10: client abort mid-stream ────────────────────────────────────
+
+        /// When the client drops the response body before the stream ends, Finalize
+        /// must fire on drop and emit exactly one ledger record. The process must not
+        /// hang. Synchronization: drop the partial body then recv_timeout — no sleeps.
+        #[tokio::test]
+        async fn handle_response_inner_client_abort_mid_stream_emits_one_record() {
+            use http_body_util::BodyExt as _;
+
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::Anthropic,
+                model: None,
+                tokenizer: "approx".to_string(),
+                exact: false,
+                input_before: 150,
+                input_after: 90,
+                compress_micros: 2_000,
+                plan: "[]".to_string(),
+                original: None,
+                output_shaped: false,
+            });
+
+            // Three chunks; the client will consume only the first then drop the body.
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from_static(
+                    b"data: {\"delta\":{\"text\":\"hel\"}}\n\n",
+                )),
+                Ok(bytes::Bytes::from_static(
+                    b"data: {\"delta\":{\"text\":\"lo\"}}\n\n",
+                )),
+                Ok(bytes::Bytes::from_static(
+                    b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n",
+                )),
+            ];
+            let stream = hudsucker::futures::stream::iter(chunks);
+            let resp = Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .expect("build multi-chunk SSE response");
+
+            let out: Response<Body> = handler.handle_response_inner(resp).await;
+            assert_eq!(out.status().as_u16(), 200);
+
+            // Consume one frame then drop the body to simulate a client abort.
+            let mut body = out.into_body();
+            let _first_frame = body
+                .frame()
+                .await
+                .expect("stream must yield at least one frame")
+                .expect("frame must be Ok");
+            // Dropping the body here drops the stream closure, which drops Finalize.
+            drop(body);
+
+            // Finalize::drop is synchronous (plain mpsc send); recv_timeout is sufficient.
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Finalize must emit exactly one record on client abort");
+
+            assert_eq!(
+                rec.provider, "anthropic",
+                "record must carry the pending provider"
+            );
+            assert_eq!(rec.input_before, 150, "input_before from pending");
+            assert_eq!(rec.input_after, 90, "input_after from pending");
+
+            // No second record.
+            assert!(
+                rx.try_recv().is_err(),
+                "exactly one record must be emitted on abort — not two"
+            );
+        }
+
+        // Test 11: empty SSE body / zero chunks ───────────────────────────────
+
+        /// A 200 response with an immediately-ended stream must emit exactly one
+        /// ledger record. `output_after` must be `None` — nothing to extract from an
+        /// empty accumulator. No panic.
+        #[tokio::test]
+        async fn handle_response_inner_empty_body_emits_one_record_no_panic() {
+            let (mut handler, rx) = make_interceptor();
+
+            handler.pending = Some(Pending {
+                provider: ProviderKind::OpenAi,
+                model: Some("gpt-4o".to_string()),
+                tokenizer: "tiktoken".to_string(),
+                exact: true,
+                input_before: 80,
+                input_after: 50,
+                compress_micros: 1_000,
+                plan: "[]".to_string(),
+                original: None,
+                output_shaped: false,
+            });
+
+            // Zero-chunk stream: body ends immediately.
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = vec![];
+            let stream = hudsucker::futures::stream::iter(chunks);
+            let resp = Response::builder()
+                .status(200)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(stream))
+                .expect("build zero-chunk SSE response");
+
+            let out: Response<Body> = handler.handle_response_inner(resp).await;
+
+            assert_eq!(out.status().as_u16(), 200);
+            assert!(
+                handler.pending.is_none(),
+                "pending must be taken even for an empty body"
+            );
+
+            // Drain immediately — the body is already ended; Finalize fires on drop.
+            let out_bytes = drain_body(out.into_body()).await;
+            assert!(
+                out_bytes.is_empty(),
+                "empty stream yields empty client bytes"
+            );
+
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("Finalize must emit one record even for an empty body");
+
+            // Empty accumulator → no usage and no answer text → output_after is None.
+            assert_eq!(
+                rec.output_after, None,
+                "empty body: output_after must be None (nothing to extract)"
+            );
+            assert_eq!(rec.input_before, 80);
+            assert_eq!(rec.input_after, 50);
+            assert_eq!(rec.provider, "openai");
+
+            assert!(
+                rx.try_recv().is_err(),
+                "exactly one ledger record for an empty body"
+            );
         }
     }
 }

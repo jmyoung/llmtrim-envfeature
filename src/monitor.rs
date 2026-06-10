@@ -24,19 +24,22 @@ pub struct DaemonView {
 
 /// Benchmark output-token reduction from llmtrim's A/B suite (see bench/README). The live
 /// proxy can't measure a per-request output baseline (it never sees the un-instructed reply),
-/// so the dashboard *projects* the output side from this measured benchmark factor and labels
-/// it as such.
+/// so the dashboard *projects* the output side from this measured benchmark factor — and only
+/// onto traffic that actually carried the shaping instruction (`out_spend_shaped`), labeled
+/// as an estimate. Projecting it onto unshaped (agent) traffic would overstate ~3.7×.
 const BENCH_OUTPUT_REDUCTION: f64 = 0.73;
 
-/// Projected $ saved: measured input saving + the benchmark-estimated output saving. Compressed
-/// output is ~(1−r) of the un-instructed baseline, so the output saving is `out_spend · r/(1−r)`.
-fn projected_saved_usd(saved: f64, out_spend: f64) -> f64 {
-    saved + out_spend * BENCH_OUTPUT_REDUCTION / (1.0 - BENCH_OUTPUT_REDUCTION)
+/// Projected $ saved: measured input saving + the benchmark-estimated output saving on the
+/// *shaped* spend. Shaped output is ~(1−r) of the un-instructed baseline, so the saving on it
+/// is `out_spend_shaped · r/(1−r)`. Unshaped spend gets no projection — its baseline IS the
+/// billed amount.
+fn projected_saved_usd(saved: f64, out_spend_shaped: f64) -> f64 {
+    saved + out_spend_shaped * BENCH_OUTPUT_REDUCTION / (1.0 - BENCH_OUTPUT_REDUCTION)
 }
 
 /// Projected round-trip %: projected saving over the projected un-compressed bill.
-fn projected_round_trip_pct(saved: f64, spend: f64, out_spend: f64) -> f64 {
-    let projected = projected_saved_usd(saved, out_spend);
+fn projected_round_trip_pct(saved: f64, spend: f64, out_spend_shaped: f64) -> f64 {
+    let projected = projected_saved_usd(saved, out_spend_shaped);
     let baseline = spend + projected;
     if baseline > 0.0 {
         projected / baseline * 100.0
@@ -46,18 +49,30 @@ fn projected_round_trip_pct(saved: f64, spend: f64, out_spend: f64) -> f64 {
 }
 
 /// USD cost saved + the compressed spend, priced via the provider registry. `saved`/`spend`
-/// are *measured*; the `projected_*` helpers add the benchmark-estimated output saving.
+/// value measured tokens at list rates; `net_saved` re-prices the saving against the real
+/// (cache-discounted) bill; the `projected_*` helpers add the benchmark-estimated output
+/// saving on the shaped share only.
 #[derive(Clone, Copy)]
 pub struct Cost {
+    /// Input tokens cut × list input rate — the headline (what those tokens cost at list).
     pub saved: f64,
+    /// Compressed bill at list rates: input_after + measured output.
     pub spend: f64,
-    /// The output-token portion of `spend` ($) — what we project the output saving against.
+    /// The output-token portion of `spend` ($).
     pub out_spend: f64,
+    /// The same measured saving priced against the provider-reported usage split (cache
+    /// reads ~10%, writes 125%, fresh 100%) — what actually came off the bill. Equals
+    /// `saved` when the traffic uses no prompt cache.
+    pub net_saved: f64,
+    /// Output spend from requests that carried the shaping instruction — the only spend
+    /// the A/B benchmark factor may be projected onto.
+    pub out_spend_shaped: f64,
 }
 
 impl Cost {
     /// Measured round-trip cost saved as a percentage of the bill — input-side only, since
-    /// output savings isn't measurable live (small; understates the real win).
+    /// output savings isn't measurable live (small; understates the real win). List-rate
+    /// numerator over list-rate denominator: a consistent basis.
     fn pct(&self) -> f64 {
         let total = self.saved + self.spend;
         if total > 0.0 {
@@ -68,11 +83,11 @@ impl Cost {
     }
 
     fn projected_saved(&self) -> f64 {
-        projected_saved_usd(self.saved, self.out_spend)
+        projected_saved_usd(self.saved, self.out_spend_shaped)
     }
 
     fn projected_pct(&self) -> f64 {
-        projected_round_trip_pct(self.saved, self.spend, self.out_spend)
+        projected_round_trip_pct(self.saved, self.spend, self.out_spend_shaped)
     }
 }
 
@@ -202,6 +217,22 @@ pub fn snapshot(
     };
     o.push_str(&ui::panel(color, title, &[hero]));
     o.push('\n');
+    // The headline values cut tokens at list input rates. Where the provider billed part
+    // of the prompt at cache-read/write rates, the slice that actually came off the bill
+    // is smaller — print it right under the hero so the big number never needs defending.
+    // Hidden when the traffic uses no prompt cache (the two figures coincide).
+    if let Some(c) = cost
+        && c.net_saved + 0.005 < c.saved
+    {
+        o.push_str(&ui::paint(
+            color,
+            Tone::Dim,
+            &format!(
+                "  ≈ ${:.2} off your actual bill (after prompt-cache discounts)\n",
+                c.net_saved
+            ),
+        ));
+    }
 
     // axes
     o.push_str(&axis(color, "input", s.input_before, s.input_after));
@@ -280,16 +311,27 @@ pub fn snapshot(
         ));
     }
     if let Some(c) = cost {
-        // Surface the output-side projection separately and clearly as an estimate that holds
-        // ONLY when output is shaped — never folded into the measured headline above.
+        // Surface the output-side projection separately and clearly as an estimate — never
+        // folded into the measured headline above. Projected ONLY onto the spend that
+        // actually carried the shaping instruction; unshaped (agent) output is billed at
+        // its own baseline, so there is nothing to project there.
         let extra = c.projected_saved() - c.saved;
-        if extra > 0.0 {
+        if extra > 0.005 {
             o.push_str(&ui::paint(
                 color,
                 Tone::Dim,
                 &format!(
-                    " ~ + est. ${extra:.2} more if output is shaped (A/B bench −73%); not measured live, excluded from the headline.\n"
+                    " ~ + est. ${extra:.2} more saved by output shaping (A/B bench −73%); estimated, excluded from the headline.\n"
                 ),
+            ));
+        } else if c.out_spend > c.out_spend_shaped {
+            // Shaping is off for this traffic — by design on tool-calling (agent) requests,
+            // where terse instructions hurt quality for ~no win. Say so rather than leaving
+            // the output axis' "if output shaped" hanging.
+            o.push_str(&ui::paint(
+                color,
+                Tone::Dim,
+                " ~ output shaping off for agent traffic (protects tool-call quality); bench shows −73% where enabled.\n",
             ));
         }
     }
@@ -355,6 +397,8 @@ pub fn export_json(
         "output": { "before": s.output_before, "after": s.output_after,
                     "events": s.output_events, "saved_pct": s.output_saved_pct() },
         "cost": cost.map(|c| json!({ "saved_usd": c.saved, "spend_usd": c.spend, "round_trip_pct": c.pct(),
+                                     "net_saved_usd": c.net_saved, "out_spend_usd": c.out_spend,
+                                     "out_spend_shaped_usd": c.out_spend_shaped,
                                      "projected_saved_usd": c.projected_saved(), "projected_round_trip_pct": c.projected_pct() })),
         "added_latency_ms": s.avg_compress_micros.map(|us| us / 1000.0),
         "cache_read_tokens": s.cache_read_tokens,
@@ -417,7 +461,9 @@ mod tests {
         let cost = Cost {
             saved: 12.47,
             spend: 9.0,
-            out_spend: 3.0, // non-zero → an output estimate exists to surface separately
+            out_spend: 3.0,
+            net_saved: 12.47,      // no cache discount → net line hidden
+            out_spend_shaped: 3.0, // shaped → an output estimate exists to surface separately
         };
         let models = vec![ModelView {
             name: "gpt-4o".into(),
@@ -457,6 +503,8 @@ mod tests {
             saved: 10.0,
             spend: 10.0,
             out_spend: 5.0,
+            net_saved: 10.0,
+            out_spend_shaped: 5.0,
         };
         let out = snapshot(false, None, &summ(), &[], Some(&cost));
         assert!(
@@ -479,9 +527,60 @@ mod tests {
             saved: 1.0,
             spend: 1.0,
             out_spend: 0.27,
+            net_saved: 1.0,
+            out_spend_shaped: 0.27, // all of it carried the instruction
         };
         assert!((c.projected_saved() - 1.73).abs() < 1e-9);
         assert!((c.projected_pct() - 1.73 / 2.73 * 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unshaped_output_gets_no_projection() {
+        // Agent traffic: output billed without the shaping instruction. Its baseline IS the
+        // billed amount, so projecting the bench factor onto it would overstate ~3.7× —
+        // the projection must be zero and the footnote must say shaping is off, not "+ $".
+        let c = Cost {
+            saved: 10.0,
+            spend: 10.0,
+            out_spend: 5.0,
+            net_saved: 10.0,
+            out_spend_shaped: 0.0,
+        };
+        assert!((c.projected_saved() - c.saved).abs() < 1e-9);
+        let out = snapshot(false, None, &summ(), &[], Some(&c));
+        assert!(!out.contains("more saved by output shaping"));
+        assert!(
+            out.contains("output shaping off for agent traffic"),
+            "explains why no output $ is claimed"
+        );
+    }
+
+    #[test]
+    fn net_line_surfaces_cache_discounted_saving() {
+        // Cache-heavy traffic: tokens cut are worth $100 at list rates but $25 came off
+        // the real (cache-discounted) bill. Both must be visible — the hero keeps the
+        // list-rate figure, the dim line right under it carries the net one.
+        let c = Cost {
+            saved: 100.0,
+            spend: 50.0,
+            out_spend: 5.0,
+            net_saved: 25.0,
+            out_spend_shaped: 0.0,
+        };
+        let out = snapshot(false, None, &summ(), &[], Some(&c));
+        assert!(out.contains("$100.00 saved"), "hero keeps list-rate figure");
+        assert!(
+            out.contains("≈ $25.00 off your actual bill"),
+            "net figure printed under the hero"
+        );
+
+        // No prompt cache → the figures coincide → no redundant line.
+        let same = Cost {
+            net_saved: 100.0,
+            ..c
+        };
+        let out = snapshot(false, None, &summ(), &[], Some(&same));
+        assert!(!out.contains("off your actual bill"));
     }
 
     #[test]

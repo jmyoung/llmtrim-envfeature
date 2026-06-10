@@ -28,6 +28,18 @@ pub struct Record {
     /// `cache_read_input_tokens`), billed at ~10% of input price — a real bill discount the
     /// token % can't show. `None` when the provider reports none / on CLI paths.
     pub cache_read_tokens: Option<i64>,
+    /// Provider-reported *uncached* input tokens billed at the full rate (Anthropic
+    /// `input_tokens`; OpenAI `prompt_tokens − cached_tokens`). With `cache_read_tokens`
+    /// and `cache_write_tokens` this reconstructs the real input bill. `None` when the
+    /// response carried no usage / on CLI paths.
+    pub fresh_input_tokens: Option<i64>,
+    /// Provider-reported cache-write tokens (Anthropic `cache_creation_input_tokens`,
+    /// billed at 1.25×). `None` for providers without a write surcharge / no usage.
+    pub cache_write_tokens: Option<i64>,
+    /// Whether the request that was actually forwarded carried the output-shaping
+    /// instruction (Stage F ran and the compressed body was kept). `None` on rows recorded
+    /// before this column existed.
+    pub output_shaped: Option<bool>,
 }
 
 /// Per-provider aggregate row.
@@ -52,6 +64,16 @@ pub struct ModelRow {
     pub input_before: i64,
     pub input_after: i64,
     pub output_after: i64,
+    /// Provider-reported cache-read tokens (discounted prefix), summed.
+    pub cache_read: i64,
+    /// Provider-reported cache-write tokens (surcharged), summed.
+    pub cache_write: i64,
+    /// Full-rate input tokens, summed. Rows without usage fall back to
+    /// `max(input_after − cache_read, 0)` so pre-usage ledgers still price sanely.
+    pub fresh_input_est: i64,
+    /// Output tokens from requests where the output-shaping instruction was actually
+    /// forwarded — the only output the A/B bench factor may be projected onto.
+    pub output_after_shaped: i64,
 }
 
 /// Time-series bucket granularity for `by_period`.
@@ -200,7 +222,10 @@ impl Tracker {
                     output_before INTEGER,
                     output_after  INTEGER,
                     compress_micros INTEGER,
-                    cache_read_tokens INTEGER
+                    cache_read_tokens INTEGER,
+                    fresh_input_tokens INTEGER,
+                    cache_write_tokens INTEGER,
+                    output_shaped INTEGER
                 );",
             )
             .context("failed to migrate ledger schema")?;
@@ -208,7 +233,13 @@ impl Tracker {
         // with "duplicate column" once it exists (and on fresh DBs the CREATE already has it),
         // which we ignore. A *different* failure (read-only / corrupt DB) must surface here, not
         // hide until a confusing later INSERT error, so we only swallow the duplicate-column case.
-        for col in ["compress_micros", "cache_read_tokens"] {
+        for col in [
+            "compress_micros",
+            "cache_read_tokens",
+            "fresh_input_tokens",
+            "cache_write_tokens",
+            "output_shaped",
+        ] {
             if let Err(e) = self.conn.execute(
                 &format!("ALTER TABLE compressions ADD COLUMN {col} INTEGER"),
                 [],
@@ -266,8 +297,9 @@ impl Tracker {
             .execute(
                 "INSERT INTO compressions
                     (ts, provider, model, tokenizer, exact, input_before, input_after,
-                     output_before, output_after, compress_micros, cache_read_tokens)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     output_before, output_after, compress_micros, cache_read_tokens,
+                     fresh_input_tokens, cache_write_tokens, output_shaped)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     ts,
                     r.provider,
@@ -280,6 +312,9 @@ impl Tracker {
                     r.output_after,
                     r.compress_micros,
                     r.cache_read_tokens,
+                    r.fresh_input_tokens,
+                    r.cache_write_tokens,
+                    r.output_shaped.map(i64::from),
                 ],
             )
             .context("failed to record compression")?;
@@ -294,8 +329,9 @@ impl Tracker {
             .execute(
                 "INSERT INTO compressions
                     (ts, provider, model, tokenizer, exact, input_before, input_after,
-                     output_before, output_after, compress_micros, cache_read_tokens)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     output_before, output_after, compress_micros, cache_read_tokens,
+                     fresh_input_tokens, cache_write_tokens, output_shaped)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     ts,
                     r.provider,
@@ -308,6 +344,9 @@ impl Tracker {
                     r.output_after,
                     r.compress_micros,
                     r.cache_read_tokens,
+                    r.fresh_input_tokens,
+                    r.cache_write_tokens,
+                    r.output_shaped.map(i64::from),
                 ],
             )
             .context("failed to record compression (test)")?;
@@ -400,6 +439,9 @@ impl Tracker {
     }
 
     /// Per-(provider, model) aggregates, for pricing each model's savings at its own rate.
+    /// `fresh_input_est` falls back to `max(input_after − cache_read, 0)` on rows recorded
+    /// before usage capture existed, so legacy ledgers still get a sane (slightly
+    /// conservative) bill estimate instead of a full-rate one.
     pub fn by_model(&self) -> Result<Vec<ModelRow>> {
         let mut stmt = self
             .conn
@@ -407,7 +449,13 @@ impl Tracker {
                 "SELECT provider, model, COUNT(*),
                         COALESCE(SUM(input_before), 0),
                         COALESCE(SUM(input_after), 0),
-                        COALESCE(SUM(output_after), 0)
+                        COALESCE(SUM(output_after), 0),
+                        COALESCE(SUM(cache_read_tokens), 0),
+                        COALESCE(SUM(cache_write_tokens), 0),
+                        COALESCE(SUM(COALESCE(fresh_input_tokens,
+                            MAX(input_after - COALESCE(cache_read_tokens, 0), 0))), 0),
+                        COALESCE(SUM(CASE WHEN output_shaped = 1
+                            THEN COALESCE(output_after, 0) ELSE 0 END), 0)
                  FROM compressions GROUP BY provider, model ORDER BY provider, model",
             )
             .context("failed to prepare model summary")?;
@@ -420,6 +468,10 @@ impl Tracker {
                     input_before: row.get(3)?,
                     input_after: row.get(4)?,
                     output_after: row.get(5)?,
+                    cache_read: row.get(6)?,
+                    cache_write: row.get(7)?,
+                    fresh_input_est: row.get(8)?,
+                    output_after_shaped: row.get(9)?,
                 })
             })
             .context("failed to query model summary")?;
@@ -503,6 +555,9 @@ mod tests {
             output_after: None,
             compress_micros: None,
             cache_read_tokens: None,
+            fresh_input_tokens: None,
+            cache_write_tokens: None,
+            output_shaped: None,
         }
     }
 
@@ -566,6 +621,9 @@ mod tests {
             output_after: Some(42),
             compress_micros: Some(300),
             cache_read_tokens: Some(50),
+            fresh_input_tokens: Some(80),
+            cache_write_tokens: Some(12),
+            output_shaped: Some(true),
         })
         .unwrap();
 
@@ -581,6 +639,9 @@ mod tests {
             output_after: Some(17),
             compress_micros: Some(500),
             cache_read_tokens: Some(70),
+            fresh_input_tokens: None,
+            cache_write_tokens: None,
+            output_shaped: Some(false),
         })
         .unwrap();
 
@@ -615,6 +676,28 @@ mod tests {
         assert_eq!(oa.output_events, 2);
         assert_eq!(oa.output_after, 59);
         assert_eq!(oa.output_before, 0);
+
+        // Per-model billing aggregates: usage sums, the legacy fresh-input fallback
+        // (row 2 has no fresh_input → max(50 − 70, 0) = 0), and the shaped-output split
+        // (only row 1 was shaped → 42 of the 59 output tokens).
+        let models = t.by_model().unwrap();
+        let gpt = models
+            .iter()
+            .find(|m| m.model.as_deref() == Some("gpt-4o"))
+            .unwrap();
+        assert_eq!(gpt.cache_read, 120);
+        assert_eq!(gpt.cache_write, 12);
+        assert_eq!(gpt.fresh_input_est, 80, "row1 usage + row2 fallback of 0");
+        assert_eq!(gpt.output_after_shaped, 42);
+        let m = models
+            .iter()
+            .find(|m| m.model.as_deref() == Some("m"))
+            .unwrap();
+        assert_eq!(
+            m.fresh_input_est, 30,
+            "no usage, no cache → fallback to input_after"
+        );
+        assert_eq!(m.output_after_shaped, 0, "shaped unknown → not credited");
     }
 
     #[test]

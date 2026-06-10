@@ -49,6 +49,10 @@ pub struct CompressResult {
     pub input_tokens_before: Tokens,
     pub input_tokens_after: Tokens,
     pub stages: Vec<StageReport>,
+    /// Whether Stage F (output shaping) ran on this request — i.e. the *effective* config
+    /// (after `auto` routing) enabled it. The ledger needs this to project the benchmark
+    /// output reduction only onto traffic that actually carried the instruction.
+    pub output_shaped: bool,
 }
 
 /// The ordered MVP stage list for a provider. Empty until Stage D/F land in later
@@ -250,6 +254,7 @@ pub fn compress_with_config(
         input_tokens_before: outcome.input_tokens_before,
         input_tokens_after: outcome.input_tokens_after,
         stages: outcome.stages,
+        output_shaped: config.output_control || config.output_compact_code,
     })
 }
 

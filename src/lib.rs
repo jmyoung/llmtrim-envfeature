@@ -19,6 +19,7 @@ pub mod doctor;
 pub mod gate;
 pub mod ir;
 pub mod media;
+pub mod memo;
 pub mod monitor;
 pub mod pipeline;
 pub mod provider;

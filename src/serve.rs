@@ -48,6 +48,7 @@ mod imp {
 
     use crate::config::DenseConfig;
     use crate::ir::ProviderKind;
+    use crate::memo::Memo;
     use crate::tracking::{Record, Tracker};
 
     /// The exact endpoint hosts of every provider in the `llm_providers` registry — the
@@ -385,6 +386,10 @@ mod imp {
         /// a stale CA — one generated before a host was added — blind-tunnels the new host rather
         /// than forging a cert its own name-constraints reject. Degrade safely, never break.
         domains: Arc<std::collections::HashSet<String>>,
+        /// Turn-stability memo (see [`crate::memo`]), shared across the per-request handler
+        /// clones so a conversation's earlier-turn compressed prefix is reusable on its next
+        /// turn — keeping the provider prefix cache warm on agent loops. In-memory only.
+        memo: Arc<Memo>,
         /// The compressed request awaiting its response (set in `handle_request`).
         pending: Option<Pending>,
     }
@@ -468,9 +473,10 @@ mod imp {
             // can't monopolize the async workers (which would stall response streaming for
             // everyone). Cheap to move in: `Bytes` is ref-counted, `config` is an `Arc`.
             let config = self.config.clone();
+            let memo = self.memo.clone();
             let body_for_compress = bytes.clone();
             let compressed = tokio::task::spawn_blocking(move || {
-                compress_blocking(&config, &body_for_compress, provider)
+                compress_blocking(&config, &body_for_compress, provider, &memo)
             })
             .await
             .ok()
@@ -590,14 +596,15 @@ mod imp {
         }
     }
 
-    /// The CPU-bound compression, run on the blocking pool (see `handle_request`). Pure: takes
-    /// the request body + config, returns the compressed JSON paired with the per-request
-    /// `Pending` (its `original` left unset — the caller fills it). `None` to forward verbatim
-    /// (not UTF-8/JSON, errored, or no net token win).
+    /// The CPU-bound compression, run on the blocking pool (see `handle_request`). Pure w.r.t.
+    /// I/O: takes the request body + config + the turn-stability memo, returns the compressed
+    /// JSON paired with the per-request `Pending` (its `original` left unset — the caller fills
+    /// it). `None` to forward verbatim (not UTF-8/JSON, errored, or no net token win).
     fn compress_blocking(
         config: &DenseConfig,
         body: &[u8],
         provider: ProviderKind,
+        memo: &Memo,
     ) -> Option<(String, Pending)> {
         let text = std::str::from_utf8(body).ok()?;
         if !text.trim_start().starts_with('{') {
@@ -611,14 +618,18 @@ mod imp {
             .and_then(|v| crate::provider::detect(&v))
             .unwrap_or(provider);
         let started = std::time::Instant::now();
-        let result = crate::compress_with_config(text, Some(kind), config).ok()?;
-        let compress_micros = started.elapsed().as_micros() as i64;
+        let mut result = crate::compress_with_config(text, Some(kind), config).ok()?;
         // Never forward a request larger than we received. On tiny or non-chat bodies (e.g.
         // token-count / auxiliary calls) the input-side stages can't offset the output-control
         // instruction's fixed cost, so the compressed form is a net token *increase*. Forward
         // the original verbatim — the "never a bigger bill" guarantee — but still record the
         // zero-savings row: the dashboard's request count and savings %s must describe ALL
         // proxied chat traffic, not just the wins (else the % is a self-selected best case).
+        //
+        // The turn-stability memo runs only on the compression-*success* path below, so its
+        // invariant is clean — it stores and replays exactly the bytes we forward as the
+        // compressed body. Passthrough requests (the original is forwarded) are left stateless,
+        // so a later turn never replays a compressed prefix the provider never actually cached.
         if result.input_tokens_after >= result.input_tokens_before {
             let pending = Pending {
                 provider: kind,
@@ -627,7 +638,7 @@ mod imp {
                 exact: result.tokenizer_exact,
                 input_before: result.input_tokens_before.0 as i64,
                 input_after: result.input_tokens_before.0 as i64,
-                compress_micros,
+                compress_micros: started.elapsed().as_micros() as i64,
                 plan: String::new(),
                 original: None,
                 // The forwarded original carries no shaping instruction.
@@ -635,6 +646,13 @@ mod imp {
             };
             return Some((text.to_string(), pending));
         }
+        // Compression won: replay an already-seen conversation prefix's compressed bytes verbatim
+        // across turns so the provider prefix cache stays warm (the highest-traffic agent-loop
+        // shape). The memo only reuses bytes it itself produced for a byte-identical earlier
+        // message and keeps the result ≤ the original, so it can't flip this win into a loss;
+        // it recomputes `input_after` over the rewritten body so the ledger stays honest.
+        apply_turn_memo(config, memo, kind, text, &mut result);
+        let compress_micros = started.elapsed().as_micros() as i64;
         let pending = Pending {
             // The detected kind, not the host fallback — `handle_response` reads the response
             // usage with this provider's field shapes, so it must match what we compressed as.
@@ -650,6 +668,57 @@ mod imp {
             output_shaped: result.output_shaped,
         };
         Some((result.request_json, pending))
+    }
+
+    /// Apply the turn-stability memo to a freshly compressed `result`, in place. Replays an
+    /// already-seen conversation prefix's compressed `content` verbatim (keeping the provider
+    /// prefix cache warm) and records this turn for the next one. On reuse it recomputes
+    /// `input_tokens_after` over the rewritten body so the recorded savings reflect what is
+    /// actually sent. No-op (full stateless behavior) when the flag is off, the n-gram carve-out
+    /// applies, or the JSON can't be re-parsed.
+    fn apply_turn_memo(
+        config: &DenseConfig,
+        memo: &Memo,
+        kind: ProviderKind,
+        original_body: &str,
+        result: &mut crate::CompressResult,
+    ) {
+        if !config.memo {
+            return;
+        }
+        // Carve-out: the n-gram stage rewrites content with whole-conversation-dependent
+        // placeholders (`§1`…) backed by an injected legend — splicing an earlier turn's encoding
+        // into a differently-numbered legend would corrupt it. Detect it from the *effective*
+        // run (catches `auto` routing), and skip the memo entirely for this request when present.
+        let ngram_ran = result.stages.iter().any(|s| s.applied && s.name == "ngram");
+        if ngram_ran {
+            return;
+        }
+        let (Ok(original), Ok(mut compressed)) = (
+            serde_json::from_str::<serde_json::Value>(original_body),
+            serde_json::from_str::<serde_json::Value>(&result.request_json),
+        ) else {
+            return;
+        };
+        let reused = crate::memo::apply(memo, &original, &mut compressed);
+        if reused == 0 {
+            // Either nothing matched (cold prefix) or an unmodelled shape: `compressed` is
+            // unchanged from `result.request_json`, so leave the result (and its counts) as-is.
+            return;
+        }
+        // Re-serialize the rewritten body and recompute the content+tools token count over it,
+        // so `input_after` describes the bytes we actually forward. The counter is the same one
+        // `compress_with_config` used (provider + model), so the measure is consistent.
+        let Ok(rewritten) = serde_json::to_string(&compressed) else {
+            return;
+        };
+        if let Ok(counter) = crate::tokenizer::counter_for(kind, result.model.as_deref()) {
+            let adapter = crate::provider::for_kind(kind);
+            let req = crate::ir::Request::from_value(kind, compressed);
+            let after = crate::pipeline::content_tokens(&req, adapter.as_ref(), counter.as_ref());
+            result.input_tokens_after = crate::tokenizer::Tokens(after);
+        }
+        result.request_json = rewritten;
     }
 
     /// Owns the accumulated response bytes; on drop (stream complete/aborted) it measures
@@ -1040,6 +1109,8 @@ mod imp {
             // `ensure_ca` above just reconciled the CA + sidecar, so this is exactly what the
             // live CA can sign for.
             domains: Arc::new(covered_domains()),
+            // One process-wide turn-stability memo, shared across the per-request handler clones.
+            memo: Arc::new(Memo::with_capacity(crate::memo::DEFAULT_CAPACITY)),
             pending: None,
         };
 
@@ -1505,8 +1576,9 @@ mod imp {
             use crate::config::DenseConfig;
             use crate::ir::ProviderKind;
             let cfg = DenseConfig::default();
-            assert!(compress_blocking(&cfg, b"not json", ProviderKind::OpenAi).is_none());
-            assert!(compress_blocking(&cfg, b"", ProviderKind::OpenAi).is_none());
+            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
+            assert!(compress_blocking(&cfg, b"not json", ProviderKind::OpenAi, &memo).is_none());
+            assert!(compress_blocking(&cfg, b"", ProviderKind::OpenAi, &memo).is_none());
         }
 
         #[test]
@@ -1516,10 +1588,11 @@ mod imp {
             // A tiny request: compression overhead exceeds savings → gate fires → None.
             let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
             let cfg = DenseConfig::default();
+            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
             // May return None (net loss) or Some (net win); both are valid.
             // The important assertion: when Some, the compressed form must have fewer input tokens.
             if let Some((compressed, pending)) =
-                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi)
+                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi, &memo)
             {
                 assert!(
                     pending.input_after <= pending.input_before,
@@ -1543,10 +1616,11 @@ mod imp {
             })
             .to_string();
             let cfg = DenseConfig::default();
+            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
             // Dedup is default-on and the spam is contiguous: this must compress, so a
             // `None` here is a regression (the test must not pass vacuously).
             let (compressed, pending) =
-                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi)
+                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi, &memo)
                     .expect("50 identical log lines must produce a net token win");
             assert!(
                 pending.input_after < pending.input_before,
@@ -1601,8 +1675,9 @@ mod imp {
             })
             .to_string();
             let cfg = DenseConfig::default();
+            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
             if let Some((compressed_json, pending)) =
-                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi)
+                compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi, &memo)
             {
                 // compress_blocking now always returns Some for valid JSON, even on zero-savings
                 // inputs (the caller records the row; `input_after == input_before` means
@@ -1642,6 +1717,7 @@ mod imp {
                 config: Arc::new(crate::config::DenseConfig::default()),
                 ledger: tx,
                 domains: Arc::new(intercept_domains().into_iter().collect()),
+                memo: Arc::new(Memo::with_capacity(crate::memo::DEFAULT_CAPACITY)),
                 pending: None,
             };
             (handler, rx)

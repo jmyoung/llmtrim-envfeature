@@ -155,6 +155,16 @@ pub struct DenseConfig {
     /// per request (`route`). Set by `auto()` / `preset("auto")`; the runtime default
     /// when no config file is present. `false` keeps the explicit flags (incl. defaults).
     pub auto: bool,
+    /// Serve-layer turn-stability memo (see [`crate::memo`]). When on, the proxy reuses an
+    /// already-seen conversation prefix's compressed bytes verbatim across turns, so the
+    /// provider prefix cache (Anthropic `cache_control`, OpenAI implicit) stays warm on agent
+    /// loops — where 85–95% of the prompt is unchanged turn-to-turn. **Read only by the
+    /// `serve` interceptor**; the stateless `compress_with_config` core ignores it (it has no
+    /// cross-request memory), so it is inert for the CLI. On by default: the memo only ever
+    /// replays bytes it itself produced for a byte-identical earlier message and the suffix
+    /// still passes the input-token gate, so it can't worsen a request — at worst it does
+    /// nothing (cold prefix / n-gram carve-out). In-memory only (SECURITY.md).
+    pub memo: bool,
 }
 
 impl Default for DenseConfig {
@@ -207,6 +217,7 @@ impl Default for DenseConfig {
             multimodal: false,
             image_detail: None,
             auto: false,
+            memo: true,
         }
     }
 }

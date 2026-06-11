@@ -490,17 +490,9 @@ pub fn snapshot(
         ));
         o.push('\n');
     }
-    if s.cache_read_tokens > 0 {
-        // Cache-safety is a feature, not a savings bar: a full "−90%" bar here read as if
-        // llmtrim earned the cache discount. A ✓ status line says what we actually do —
-        // protect the frozen prefix so the provider's ~90% discount keeps applying.
-        o.push_str(&format!(
-            "  {:<7} {}   {} tokens kept cache-hot — never recompressed\n",
-            "cache",
-            ui::paint(color, Tone::Accent, ui::OK),
-            ui::human(s.cache_read_tokens),
-        ));
-    }
+    // (No cache line: cache-safety is a property, not a per-run number. A token count here
+    // credited llmtrim for the provider's own cache discount, and a static "we don't bust
+    // your cache" reassurance is dashboard clutter — that belongs in the docs, not status.)
 
     // by-model table — MEASURED input-side saving per model (matches the honest headline):
     // input % saved and the input-side $ saved where the registry prices the model. No output

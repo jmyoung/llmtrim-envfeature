@@ -585,7 +585,7 @@ fn remove_profile_block_in(base: &std::path::Path) -> Result<Vec<PathBuf>> {
     #[cfg(windows)]
     {
         let _ = base;
-        return Ok(vec![]);
+        Ok(vec![])
     }
     #[cfg(not(windows))]
     {
@@ -626,7 +626,7 @@ fn remove_profile_block() -> Result<Vec<PathBuf>> {
         }
         std::fs::write(&path, strip_block(&existing))
             .with_context(|| format!("failed to write {}", path.display()))?;
-        return Ok(vec![path]);
+        Ok(vec![path])
     }
     #[cfg(not(windows))]
     {

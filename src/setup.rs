@@ -173,22 +173,27 @@ pub fn run(requested: Option<u16>) -> Result<()> {
         broadcast_env_change();
     }
     #[cfg(not(windows))]
-    let manual_env = match write_profile_block(&proxy, &ca)? {
-        Some(path) => {
-            rows.push((
-                ui::OK,
-                "Profile".into(),
-                format!("{} — HTTPS_PROXY + CA trust", path.display()),
-            ));
-            false
-        }
-        None => {
+    let manual_env = {
+        let paths = write_profile_block(&proxy, &ca)?;
+        if paths.is_empty() {
             rows.push((
                 ui::NOTE,
                 "Profile".into(),
                 "no shell profile found — set the env yourself (below)".into(),
             ));
             true
+        } else {
+            let names = paths
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            rows.push((
+                ui::OK,
+                "Profile".into(),
+                format!("{names} — HTTPS_PROXY + CA trust"),
+            ));
+            false
         }
     };
 
@@ -550,17 +555,25 @@ pub fn uninstall(purge: bool, keep_binary: bool) -> Result<()> {
     Ok(())
 }
 
-/// All POSIX shell profile files that llmtrim may have written a managed block into.
-/// A user can install under bash (block goes to `.bashrc`), later switch to zsh, and the
-/// stale block in `.bashrc` keeps `HTTPS_PROXY` pointed at a dead proxy unless we sweep
-/// all three candidates on every removal. `base` is the home directory; tests pass a
-/// temp dir so no real `$HOME` is ever mutated.
+/// Every POSIX shell rc file llmtrim may write its managed block into. Setup writes the
+/// block to all of these that exist (so whichever shell the terminal launches picks up the
+/// env, independent of `$SHELL`); uninstall sweeps the block from all of them. Covers the
+/// interactive AND login rc of the two common shells, plus the universal `.profile`:
+/// zsh interactive `.zshrc` / login `.zprofile`; bash interactive `.bashrc` / login
+/// `.bash_profile`; and `.profile` (sh, and bash-login when no `.bash_profile`). `base` is
+/// the home directory; tests pass a temp dir so no real `$HOME` is ever mutated.
 #[cfg(not(windows))]
 fn candidate_profiles(base: &std::path::Path) -> Vec<PathBuf> {
-    [".bashrc", ".zshrc", ".profile"]
-        .iter()
-        .map(|f| base.join(f))
-        .collect()
+    [
+        ".zshrc",
+        ".zprofile",
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+    ]
+    .iter()
+    .map(|f| base.join(f))
+    .collect()
 }
 
 /// Strip the llmtrim managed block from **every** POSIX shell profile that contains it,
@@ -883,7 +896,10 @@ fn schedule_file_removal(file: &std::path::Path) {
     use std::process::Stdio;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = format!("ping 127.0.0.1 -n 3 >nul & del /f /q \"{}\"", file.display());
+    let script = format!(
+        "ping 127.0.0.1 -n 3 >nul & del /f /q \"{}\"",
+        file.display()
+    );
     let _ = std::process::Command::new("cmd")
         .args(["/c", &script])
         .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
@@ -1004,22 +1020,43 @@ fn write_profile_block_in(
     shell: &str,
     proxy: &str,
     ca: &str,
-) -> Result<PathBuf> {
-    let path = base.join(shell_profile_file(shell));
-    // Sweep stale blocks from ALL candidate profiles under base (including the target).
-    // Best-effort: a failure to strip a stale file must not block writing the new block.
+) -> Result<Vec<PathBuf>> {
+    // Refresh, never accumulate: strip any prior managed block from EVERY candidate first,
+    // so a re-run (or a proxy/port change) leaves no stale block behind. Best-effort - a
+    // failure to strip one file must not block writing the fresh block.
     let _ = remove_profile_block_in(base);
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    // strip_block is a safety net in case remove_profile_block_in skipped a file with a
-    // broken BEGIN-without-END that it left intact.
-    let mut base_content = strip_block(&existing);
-    if !base_content.is_empty() && !base_content.ends_with('\n') {
-        base_content.push('\n');
+
+    // Write the block into every candidate rc file that already EXISTS, plus the file the
+    // user's `$SHELL` sources (created if absent). Writing to all existing files is what
+    // fixes the macOS trap: setup keyed the target off `$SHELL`, but `$SHELL` is the login
+    // shell and can disagree with the shell the terminal actually launches (iTerm running
+    // zsh while `$SHELL=/bin/bash`), so the block landed in a file the running shell never
+    // sourced. Now whichever shell starts, its rc already carries the env. The managed
+    // BEGIN/END markers make a block in several files idempotent and cleanly removable.
+    let mut targets: Vec<PathBuf> = candidate_profiles(base)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
+    let shell_default = base.join(shell_profile_file(shell));
+    if !targets.contains(&shell_default) {
+        targets.push(shell_default); // guarantee the running shell's rc gets it, even if absent
     }
+
     let block = env_block(proxy, ca, Syntax::Posix);
-    std::fs::write(&path, format!("{base_content}{block}"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(path)
+    let mut written = Vec::with_capacity(targets.len());
+    for path in targets {
+        // strip_block is a safety net in case remove_profile_block_in skipped a file with a
+        // broken BEGIN-without-END that it left intact.
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut base_content = strip_block(&existing);
+        if !base_content.is_empty() && !base_content.ends_with('\n') {
+            base_content.push('\n');
+        }
+        std::fs::write(&path, format!("{base_content}{block}"))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 /// Replace (or append) the llmtrim managed block in the shell profile. Idempotent — a
@@ -1028,22 +1065,22 @@ fn write_profile_block_in(
 /// so re-setup under a different shell does not leave a dead proxy block behind.
 /// POSIX-only: on Windows the env lives in the registry, so `run()` never calls this there.
 #[allow(dead_code)]
-fn write_profile_block(proxy: &str, ca: &str) -> Result<Option<PathBuf>> {
+fn write_profile_block(proxy: &str, ca: &str) -> Result<Vec<PathBuf>> {
     #[cfg(not(windows))]
     {
         // Delegate to the seam so production and tests run the same code path.
         let Ok(home) = std::env::var("HOME") else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let shell = std::env::var("SHELL").unwrap_or_default();
-        write_profile_block_in(std::path::Path::new(&home), &shell, proxy, ca).map(Some)
+        write_profile_block_in(std::path::Path::new(&home), &shell, proxy, ca)
     }
     #[cfg(windows)]
     {
         // Legacy PowerShell-profile arm: the live Windows env is the registry; this is
         // only reachable for a profile-style install a prior version may have used.
         let Some((path, syntax)) = profile_target() else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent); // the PowerShell profile dir may not exist yet
@@ -1056,7 +1093,7 @@ fn write_profile_block(proxy: &str, ca: &str) -> Result<Option<PathBuf>> {
         let block = env_block(proxy, ca, syntax);
         std::fs::write(&path, format!("{base_content}{block}"))
             .with_context(|| format!("failed to write {}", path.display()))?;
-        Ok(Some(path))
+        Ok(vec![path])
     }
 }
 
@@ -1424,10 +1461,12 @@ mod tests {
         std::fs::write(base.join(".bashrc"), "export FOO=bar\nexport BAZ=qux\n")
             .expect("write pre-existing .bashrc");
 
-        let path = write_profile_block_in(base, "bash", proxy, ca).expect("write_profile_block_in");
-        assert_eq!(path, base.join(".bashrc"));
+        let paths =
+            write_profile_block_in(base, "bash", proxy, ca).expect("write_profile_block_in");
+        // Only `.bashrc` exists and it is the bash default -> that's the sole target.
+        assert_eq!(paths, vec![base.join(".bashrc")]);
 
-        let content = std::fs::read_to_string(&path).expect("read back");
+        let content = std::fs::read_to_string(base.join(".bashrc")).expect("read back");
         // Unrelated content must be preserved above the block.
         assert!(
             content.contains("export FOO=bar"),
@@ -1474,38 +1513,85 @@ mod tests {
         );
     }
 
-    /// Shell-switch sweep: block written for bash, then write_profile_block_in called with zsh.
-    /// The stale .bashrc block must be removed; .zshrc gets the new block.
+    /// Re-setup writes to every existing rc file AND the `$SHELL` default, refreshing (not
+    /// orphaning) a prior block. Prior bash setup left a block (old port) in `.bashrc`;
+    /// re-running under zsh with a new port must update `.bashrc` in place *and* create
+    /// `.zshrc`, with the old port gone from both.
     #[cfg(not(windows))]
     #[test]
-    fn write_profile_block_in_sweeps_stale_shell_on_switch() {
+    fn write_profile_block_in_refreshes_all_existing_and_creates_shell_default() {
         let dir = TempDir::new("wpb-switch");
         let base = dir.path();
-        let proxy = "http://127.0.0.1:8787";
         let ca = "/tmp/ca.crt";
 
-        // Simulate a prior bash setup: .bashrc has a managed block.
+        // Prior bash setup: `.bashrc` carries a managed block pinned to the OLD port (8787).
         write_block_to(base, ".bashrc");
 
-        // Now "switch" to zsh.
-        let path =
-            write_profile_block_in(base, "zsh", proxy, ca).expect("write_profile_block_in for zsh");
-        assert_eq!(path, base.join(".zshrc"), "should write to .zshrc");
-
-        // .bashrc must have its stale block swept.
-        let bashrc = std::fs::read_to_string(base.join(".bashrc")).expect("read .bashrc");
+        // Re-setup under zsh, NEW port.
+        let new_proxy = "http://127.0.0.1:9999";
+        let paths = write_profile_block_in(base, "zsh", new_proxy, ca).expect("write for zsh");
+        // Both the existing `.bashrc` and the freshly-created zsh default are written.
         assert!(
-            !bashrc.contains(BEGIN),
-            ".bashrc still contains stale block after shell switch"
+            paths.contains(&base.join(".bashrc")),
+            "existing .bashrc written: {paths:?}"
+        );
+        assert!(
+            paths.contains(&base.join(".zshrc")),
+            "zsh default created: {paths:?}"
         );
 
-        // .zshrc must have exactly one block.
-        let zshrc = std::fs::read_to_string(base.join(".zshrc")).expect("read .zshrc");
+        for name in [".bashrc", ".zshrc"] {
+            let body = std::fs::read_to_string(base.join(name)).expect("read rc");
+            assert_eq!(body.matches(BEGIN).count(), 1, "{name}: exactly one block");
+            assert!(body.contains("9999"), "{name}: refreshed to the new port");
+            assert!(
+                !body.contains("8787"),
+                "{name}: old port must be gone (no stale block)"
+            );
+        }
+    }
+
+    /// `$SHELL` default is created even when NO rc file exists yet, and ONLY that file
+    /// (no littering `.bashrc`/`.profile` on a fresh zsh-only home).
+    #[cfg(not(windows))]
+    #[test]
+    fn write_profile_block_in_creates_only_the_shell_default_when_none_exist() {
+        let dir = TempDir::new("wpb-none");
+        let base = dir.path();
+        let paths = write_profile_block_in(base, "/bin/zsh", "http://127.0.0.1:8788", "/tmp/ca")
+            .expect("write");
         assert_eq!(
-            zshrc.matches(BEGIN).count(),
-            1,
-            ".zshrc should have exactly one block"
+            paths,
+            vec![base.join(".zshrc")],
+            "only the zsh default is created"
         );
+        assert!(base.join(".zshrc").exists());
+        for other in [".zprofile", ".bashrc", ".bash_profile", ".profile"] {
+            assert!(!base.join(other).exists(), "{other} must not be created");
+        }
+    }
+
+    /// Multiple shells installed (several rc files present): the block lands in every one,
+    /// so whichever shell the terminal launches is covered.
+    #[cfg(not(windows))]
+    #[test]
+    fn write_profile_block_in_writes_to_all_existing_rc_files() {
+        let dir = TempDir::new("wpb-all");
+        let base = dir.path();
+        for f in [".zshrc", ".bashrc", ".profile"] {
+            std::fs::write(base.join(f), "# pre-existing\n").expect("seed rc");
+        }
+        let paths = write_profile_block_in(base, "/bin/bash", "http://127.0.0.1:8788", "/tmp/ca")
+            .expect("write");
+        for f in [".zshrc", ".bashrc", ".profile"] {
+            assert!(paths.contains(&base.join(f)), "{f} written: {paths:?}");
+            let body = std::fs::read_to_string(base.join(f)).expect("read");
+            assert_eq!(body.matches(BEGIN).count(), 1, "{f}: one block");
+            assert!(body.contains("# pre-existing"), "{f}: kept user content");
+        }
+        // The two login rc files that did NOT exist stay absent (only existing + default).
+        assert!(!base.join(".zprofile").exists());
+        assert!(!base.join(".bash_profile").exists());
     }
 
     // ── strip_block adversarial cases ────────────────────────────────────────────────

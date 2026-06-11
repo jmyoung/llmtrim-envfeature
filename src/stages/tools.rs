@@ -292,14 +292,65 @@ fn select_tools(req: &mut Request, provider: &dyn Provider) {
     // block would dangle (and the agent clearly needs it). Multi-turn safety — independent of
     // the BM25F score.
     let used = tools_used_in_history(req);
+
+    // Explicit-mention rail: a tool whose exact name appears as a standalone token anywhere in
+    // the conversation's content text is kept regardless of score. The BM25F query above is
+    // bounded to the most-recent TOOL_QUERY_MAX_BYTES, so a tool referenced only by an early
+    // instruction ("use ToolSearch before calling deferred tools") would otherwise score 0 and
+    // be dropped — guaranteeing an invalid tool call if the model obeys that instruction. A
+    // false keep costs a few schema tokens; a false drop breaks a tool call, so bias to keep.
+    // One pass over the full content text (cheap substring scan), independent of the query cap.
+    let mut mentioned: HashSet<&str> = HashSet::new();
+    for p in pointers.iter() {
+        if mentioned.len() == descriptors.len() {
+            break;
+        }
+        if let Some(s) = req.get_str(p) {
+            for (name, _) in descriptors.iter() {
+                if !mentioned.contains(name.as_str()) && contains_standalone(s, name) {
+                    mentioned.insert(name.as_str());
+                }
+            }
+        }
+    }
+
     let keep: Vec<bool> = descriptors
         .iter()
         .zip(&scores)
-        .map(|((name, _), &s)| used.contains(name) || s > 0.0)
+        .map(|((name, _), &s)| used.contains(name) || mentioned.contains(name.as_str()) || s > 0.0)
         .collect();
     if keep.iter().any(|&k| k) {
         provider.retain_tools(req, &keep);
     }
+}
+
+/// True if `name` occurs in `text` as a standalone token: an exact, **case-sensitive** match
+/// whose neighbors are not identifier characters (Unicode-aware `char::is_alphanumeric`, plus
+/// `_`, since tool names like `mcp__server__thing` are underscore-joined identifiers). Tool
+/// names are literal identifiers (`ToolSearch`), so case-sensitivity is deliberate — it keeps a
+/// generic prose word ("run", "search") from accidentally pinning a same-named tool, at the
+/// accepted cost of missing a miscased mention. Single forward scan over `find` hits; no regex.
+fn contains_standalone(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(i) = text[from..].find(name) {
+        let start = from + i;
+        let end = start + name.len();
+        let before_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident(c));
+        let after_ok = text[end..].chars().next().is_none_or(|c| !is_ident(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        // Advance past the first char of this hit (char-boundary-safe) to find later hits.
+        from = start + name.chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// A tool as a 3-field bag-of-content-words document for BM25F: tokenized name, parameter
@@ -980,6 +1031,86 @@ mod tests {
             names.contains(&"configure"),
             "tool selected via its parameter name: {names:?}"
         );
+    }
+
+    // ── Explicit-mention keep rail ──────────────────────────────────────────────────────
+
+    /// Regression (live capture 1781204413588398-27117d): a tool whose only reference is an
+    /// instruction in an early message — beyond the TOOL_QUERY_MAX_BYTES recent window — must
+    /// survive selection. The negative half: an unmentioned, irrelevant tool is still pruned,
+    /// so the stage keeps saving tokens.
+    #[test]
+    fn explicitly_mentioned_tool_survives_beyond_query_window() {
+        let mut messages = vec![json!({
+            "role":"user",
+            "content":"Use ToolSearch with query select:<name> to load tool schemas before calling them."
+        })];
+        // >16KB of filler prose between the instruction and the recent turn, so the
+        // instruction falls outside the BM25F query window.
+        let filler = "the quiet meadow stretched beneath a pale sky while distant hills slept. ";
+        for _ in 0..12 {
+            messages.push(json!({"role":"user","content": filler.repeat(30)}));
+        }
+        messages
+            .push(json!({"role":"user","content":"what is the weather forecast in Paris today?"}));
+        let body = json!({
+            "model":"gpt-4o",
+            "messages": messages,
+            "tools":[
+                {"type":"function","function":{"name":"get_weather","description":"Get the weather forecast for a city","parameters":{}}},
+                {"type":"function","function":{"name":"ToolSearch","description":"Load deferred tool schemas","parameters":{}}},
+                {"type":"function","function":{"name":"send_email","description":"Send an email to a recipient","parameters":{}}}
+            ]
+        });
+        let mut req = Request::from_value(ProviderKind::OpenAi, body);
+        let counter = counter_for(ProviderKind::OpenAi, Some("gpt-4o")).unwrap();
+        let _ = pipeline::run(
+            &mut req,
+            &OpenAiProvider,
+            counter.as_ref(),
+            &[select_stage()],
+        );
+        let names: Vec<&str> = req
+            .raw()
+            .get("tools")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert!(
+            names.contains(&"ToolSearch"),
+            "tool mentioned only in an early instruction must be kept: {names:?}"
+        );
+        assert!(names.contains(&"get_weather"), "relevant tool kept");
+        assert!(
+            !names.contains(&"send_email"),
+            "unmentioned irrelevant tool still pruned: {names:?}"
+        );
+    }
+
+    /// Word-boundary + case-sensitivity rules of the mention scan.
+    #[test]
+    fn contains_standalone_word_boundaries() {
+        assert!(contains_standalone("use ToolSearch now", "ToolSearch"));
+        assert!(contains_standalone(
+            "query select:ToolSearch.",
+            "ToolSearch"
+        )); // punctuation neighbors
+        assert!(contains_standalone("ToolSearch", "ToolSearch")); // text edges
+        assert!(!contains_standalone("MyToolSearcher", "ToolSearch")); // embedded in identifier
+        assert!(!contains_standalone("ToolSearch_v2", "ToolSearch")); // underscore joins identifiers
+        assert!(!contains_standalone("use toolsearch now", "ToolSearch")); // case-sensitive
+        assert!(contains_standalone(
+            "call mcp__server__thing here",
+            "mcp__server__thing"
+        ));
+        assert!(!contains_standalone(
+            "mcp__server__thing2",
+            "mcp__server__thing"
+        ));
+        // Unicode neighbor counts as identifier char: no false boundary on non-ASCII letters.
+        assert!(!contains_standalone("préToolSearch", "ToolSearch"));
     }
 
     // ── Schema minification through the stage ────────────────────────────────────────────

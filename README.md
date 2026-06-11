@@ -57,13 +57,11 @@ A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provide
   </tbody>
 </table>
 
-Every case runs twice — original vs compressed — both answered live, scored, and priced at real `qwen/qwen3-next-80b-a3b-instruct` rates. Quality isn't the price of the savings: it edges **up +3.3pp** ([per-corpus detail](bench/README.md)).
+**The savings don't cost quality** — it's *up* +3.3pp. Every case is A/B'd live: sent twice, answered, scored, and billed at real rates — never estimated.
 
-The token cuts are fixed (−31% input, −74% output); the **cost** % tracks the model's output:input price ratio — −66% here, −44% to −59% on others ([details](bench/README.md)). Reasoning models save less: their hidden thinking is billed as output that prompt-side shaping can't trim.
+**Beyond the benchmark** — on live Claude Code traffic, llmtrim cuts **−68% of compressible input** while never touching the cached prefix, so your ~90% prompt-cache discount stays intact (`llmtrim status` shows yours).
 
-And it holds outside the bench: on live Claude Code traffic llmtrim trims **−68% of the compressible input** while never touching the cached prefix, so your ~90% prompt-cache discount stays intact (`llmtrim status` shows yours).
-
-Pooled over 112 cases the win is both ends: input and output. Per-corpus deltas are noisy at n≈12; trust the pooled figure. [Methodology + per-corpus frontier →](bench/README.md)
+<sub>Measured on `qwen/qwen3-next-80b-a3b-instruct`. Cost % scales with a model's output:input pricing — −66% here, −44–59% on others, less on reasoning models. [Methodology + per-corpus frontier →](bench/README.md)</sub>
 
 ## 🎯 Why llmtrim
 

@@ -673,7 +673,43 @@ mod imp {
             output_shaped: result.output_shaped,
             frozen_input_tokens: Some(result.frozen_input_tokens.0 as i64),
         };
+        capture_pair(text, &result.request_json, &pending);
         Some((result.request_json, pending))
+    }
+
+    /// Opt-in QA capture: when `LLMTRIM_CAPTURE_DIR` is set, write the before/after request
+    /// bodies of each compressed request as one JSON file so an external reviewer can audit
+    /// compression quality. Off (zero work beyond one env read) unless the var is set; any
+    /// write failure is logged and swallowed — capture must never break proxying.
+    fn capture_pair(before: &str, after: &str, pending: &Pending) {
+        let Ok(dir) = std::env::var("LLMTRIM_CAPTURE_DIR") else {
+            return;
+        };
+        if dir.is_empty() {
+            return;
+        }
+        let record = serde_json::json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "provider": pending.provider.as_str(),
+            "model": pending.model,
+            "input_before": pending.input_before,
+            "input_after": pending.input_after,
+            "output_shaped": pending.output_shaped,
+            "plan": pending.plan,
+            "before": before,
+            "after": after,
+        });
+        let name = format!(
+            "{}-{:x}.json",
+            chrono::Utc::now().timestamp_micros(),
+            std::process::id()
+        );
+        let path = std::path::Path::new(&dir).join(name);
+        if let Err(e) =
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, record.to_string()))
+        {
+            eprintln!("llmtrim: capture failed ({}): {e}", path.display());
+        }
     }
 
     /// Apply the turn-stability memo to a freshly compressed `result`, in place. Replays an

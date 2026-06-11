@@ -311,7 +311,85 @@ pub fn run(requested: Option<u16>) -> Result<()> {
             "GUI apps that ignore the shell env need the CA trusted system-wide — see llmtrim ca."
         )
     );
+
+    // caveman (the output-compression skill) shapes replies the same way Stage F does;
+    // stacked, the two inject competing style instructions into the same prompt, and our
+    // A/B measured telegraphic output hurting quality. Warn and print caveman's *own*
+    // uninstall commands — never run them ourselves: removing another tool is the
+    // user's call, not setup's.
+    if caveman_installed() {
+        println!();
+        println!(
+            "{}",
+            ui::warn(
+                color,
+                "caveman detected — it compresses model output, which llmtrim already does \
+                 (Stage F). Stacked, the two inject competing style instructions; our A/B \
+                 measured telegraphic output hurting answer quality. Consider removing it:"
+            )
+        );
+        #[cfg(not(windows))]
+        println!(
+            "    bash <(curl -s https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/hooks/uninstall.sh)"
+        );
+        #[cfg(windows)]
+        println!(
+            "    irm https://raw.githubusercontent.com/JuliusBrussee/caveman/main/src/hooks/uninstall.ps1 | iex"
+        );
+        println!("    claude plugin disable caveman        # if installed as a Claude Code plugin");
+        println!("    npx skills remove caveman            # Cursor, Windsurf, Cline, Copilot, …");
+        println!("    gemini extensions uninstall caveman  # Gemini CLI");
+    }
     Ok(())
+}
+
+/// Best-effort caveman detection: the flag file its session hook writes, its standalone
+/// hook files, or a Claude Code plugin-cache entry. Read-only probes; any I/O failure
+/// reads as "not installed" — setup must never fail because of someone else's tool.
+fn caveman_installed() -> bool {
+    let claude_dir = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| {
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .ok()
+                .map(|h| PathBuf::from(h).join(".claude"))
+        });
+    let Some(dir) = claude_dir else {
+        return false;
+    };
+    caveman_installed_in(&dir)
+}
+
+/// The detection itself, on an explicit Claude config dir (testable without env games).
+fn caveman_installed_in(dir: &std::path::Path) -> bool {
+    if dir.join(".caveman-active").is_file()
+        || dir.join("hooks").join("caveman-activate.js").is_file()
+        || dir.join("hooks").join("caveman-config.js").is_file()
+    {
+        return true;
+    }
+    // Plugin install: a "caveman" entry somewhere shallow in the plugin cache.
+    fn walk(p: &std::path::Path, depth: u8) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().contains("caveman") {
+                return true;
+            }
+            let path = e.path();
+            if path.is_dir() && walk(&path, depth - 1) {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&dir.join("plugins"), 3)
 }
 
 /// `llmtrim uninstall` — the transparent inverse of `setup`: stop the daemon, disable
@@ -1125,6 +1203,35 @@ fn strip_block(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caveman_detection_covers_flag_hooks_and_plugin() {
+        let tmp = std::env::temp_dir().join(format!("llmtrim-caveman-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // Empty / missing dir → not installed.
+        assert!(!caveman_installed_in(&tmp));
+        std::fs::create_dir_all(&tmp).expect("create test dir");
+        assert!(!caveman_installed_in(&tmp));
+
+        // Flag file written by caveman's session hook.
+        std::fs::write(tmp.join(".caveman-active"), "1").expect("write flag");
+        assert!(caveman_installed_in(&tmp));
+        std::fs::remove_file(tmp.join(".caveman-active")).expect("rm flag");
+
+        // Standalone hook file.
+        std::fs::create_dir_all(tmp.join("hooks")).expect("mkdir hooks");
+        std::fs::write(tmp.join("hooks/caveman-activate.js"), "//").expect("write hook");
+        assert!(caveman_installed_in(&tmp));
+        std::fs::remove_file(tmp.join("hooks/caveman-activate.js")).expect("rm hook");
+        assert!(!caveman_installed_in(&tmp));
+
+        // Plugin-cache entry, nested one level (within the depth-3 walk).
+        std::fs::create_dir_all(tmp.join("plugins/cache/caveman")).expect("mkdir plugin");
+        assert!(caveman_installed_in(&tmp));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn choose_port_precedence() {

@@ -1,7 +1,7 @@
 //! llmtrim CLI.
 //!
 //! Network-free surface: `compress` reads a provider request body on stdin and writes the
-//! compressed body to stdout; `send` adds the network round-trip; `monitor` shows
+//! compressed body to stdout; `send` adds the network round-trip; `status` shows
 //! savings from the SQLite ledger; `serve`/`setup` run the MITM interceptor. The pure
 //! transform core lives in `lib.rs`.
 
@@ -39,12 +39,48 @@ const HELP_STYLES: clap::builder::Styles = clap::builder::Styles::styled()
     )
     .placeholder(clap::builder::styling::AnsiColor::Cyan.on_default());
 
+/// Hand-written top-level help: clap can't group subcommands into sections, so the
+/// command list is maintained here. Keep it in sync with the `Commands` enum.
+const HELP_TEMPLATE: &str = "\
+{about-with-newline}
+{usage-heading} {usage}
+
+Get started:
+  setup      Set everything up and start saving (CA, env, autostart, daemon)
+  status     Show the savings dashboard + interceptor health  [aliases: monitor, gain]
+
+Daemon:
+  start      Start the background interceptor (no-op if already running)
+  stop       Stop the background interceptor
+  autostart  Run the interceptor at login (--off to disable)
+
+When something's wrong:
+  doctor     Check the install end-to-end and explain anything broken
+  update     Update llmtrim to the latest release
+  uninstall  Undo everything `setup` did
+
+Pipes & one-shots:
+  compress   Compress a request from stdin to stdout
+  send       Compress a request, send it to the provider, print the response
+  serve      Run the HTTPS interceptor in the foreground
+  ca         Print the local CA certificate path and how to trust it
+
+Measurement (dev):
+  eval       Measure retrieval recall + token savings on a corpus
+  bench      A/B benchmark: tokens saved vs quality retained, on a real model
+
+Options:
+{options}
+Run `llmtrim help <command>` for details on any command.
+";
+
 #[derive(Parser)]
 #[command(
     name = "llmtrim",
     version,
     about = "Static, deterministic LLM prompt/payload compressor",
-    styles = HELP_STYLES
+    styles = HELP_STYLES,
+    help_template = HELP_TEMPLATE
 )]
 struct Cli {
     #[command(subcommand)]
@@ -71,19 +107,16 @@ enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
-    /// Run the HTTPS interceptor that compresses LLM traffic in flight
+    /// Run the HTTPS interceptor in the foreground
     ///
     /// A local MITM proxy covering every tool and provider: set HTTPS_PROXY to it
     /// and trust the CA (`llmtrim ca`). No API key needed — the client's own auth
-    /// passes through untouched.
+    /// passes through untouched. To run it in the background instead, use `start`.
     Serve {
         /// Port to listen on (127.0.0.1).
         #[arg(long, default_value_t = llmtrim::setup::DEFAULT_PORT)]
         port: u16,
-        /// Run detached in the background; manage with `status` / `stop`.
-        #[arg(long)]
-        daemon: bool,
-        /// Internal: run with crash-restart supervision (used by `--daemon`/autostart).
+        /// Internal: run with crash-restart supervision (used by `start`/autostart).
         #[arg(long, hide = true)]
         supervised: bool,
     },
@@ -115,7 +148,8 @@ enum Commands {
     ///
     /// The lightweight partner to `stop`: starts the daemon without re-running the full
     /// `setup`. Reuses the port already wired into your environment (or `--port`), so it
-    /// matches what your tools point at. Run `setup` first if you haven't.
+    /// matches what your tools point at. First time? Run `setup` instead — it wires the
+    /// environment too. To run in the foreground, use `serve`.
     Start {
         /// Port to listen on. Omit to reuse the configured port (or 43117).
         #[arg(long)]
@@ -134,7 +168,7 @@ enum Commands {
     /// traffic). Default: a snapshot, exiting 0 healthy / 1 stopped / 2 degraded;
     /// `-q` for the health word only; `--watch` for a live view;
     /// `--daily/--weekly/--monthly` for time-series; `--json/--csv` to export.
-    #[command(visible_aliases = ["status", "gain"])]
+    #[command(name = "status", visible_aliases = ["monitor", "gain"])]
     Monitor {
         /// Live refreshing dashboard (Ctrl-C to exit).
         #[arg(long)]
@@ -339,32 +373,8 @@ fn run() -> Result<()> {
 
             println!("{response}");
         }
-        Commands::Serve {
-            port,
-            daemon,
-            supervised,
-        } => {
-            if daemon {
-                let pid = llmtrim::daemon::spawn_detached(port)?;
-                let color = ui::color_stdout();
-                println!(
-                    "{}",
-                    ui::ok(
-                        color,
-                        &format!("Interceptor running in background · pid {pid} · port {port}")
-                    )
-                );
-                for (label, value) in [
-                    ("logs", llmtrim::daemon::logfile()?.display().to_string()),
-                    ("watch", "llmtrim status".to_string()),
-                    ("stop", "llmtrim stop".to_string()),
-                ] {
-                    println!(
-                        "    {}  {value}",
-                        ui::paint(color, Tone::Dim, &format!("{label:<5}"))
-                    );
-                }
-            } else if supervised {
+        Commands::Serve { port, supervised } => {
+            if supervised {
                 llmtrim::serve::run_supervised(port)?;
             } else {
                 llmtrim::serve::run(port)?;

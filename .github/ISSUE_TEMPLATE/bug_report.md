@@ -41,6 +41,6 @@ echo '<request json>' | llmtrim compress --provider openai
 ## Environment
 
 - `llmtrim --version`:
-- `llmtrim monitor` (daemon + CA + savings state):
+- `llmtrim status` (daemon + CA + savings state):
 - Install method: <!-- prebuilt binary | cargo install | homebrew | source -->
 - OS / arch:

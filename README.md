@@ -57,11 +57,11 @@ A drop-in HTTPS proxy that compresses every LLM request and reply. **Any provide
   </tbody>
 </table>
 
-**The savings don't cost quality** — it's *up* +3.3pp. Every case is A/B'd live: sent twice, answered, scored, and billed at real rates — never estimated.
+**The savings don't cost quality:** it's *up* +3.3pp. Every case is A/B'd live: sent twice, answered, scored, and billed at real rates, never estimated.
 
-**Beyond the benchmark** — on live Claude Code traffic, llmtrim cuts **−68% of compressible input** while never touching the cached prefix, so your ~90% prompt-cache discount stays intact (`llmtrim status` shows yours).
+**Beyond the benchmark:** on live Claude Code traffic, llmtrim cuts **−68% of compressible input** while never touching the cached prefix, so your ~90% prompt-cache discount stays intact (`llmtrim status` shows yours).
 
-<sub>Measured on `qwen/qwen3-next-80b-a3b-instruct`. Cost % scales with a model's output:input pricing — −66% here, −44–59% on others, less on reasoning models. [Methodology + per-corpus frontier →](bench/README.md)</sub>
+<sub>Measured on `qwen/qwen3-next-80b-a3b-instruct`. Cost % scales with a model's output:input pricing: −66% here, −44–59% on others, less on reasoning models. [Methodology + per-corpus frontier →](bench/README.md)</sub>
 
 ## 🎯 Why llmtrim
 
@@ -71,29 +71,29 @@ A request bleeds tokens in three places. Most tools fix one; llmtrim fixes all t
 - **Output**: the model's reply, the expensive half
 - **Cache**: the invariant prefix, else re-billed in full
 
-rtk and caveman each compress one layer; [Headroom](https://github.com/chopratejas/headroom) is the closest peer (input / tool-output — but Python + ML). llmtrim does the whole round-trip, pure-Rust, behind a gate that **can't make your bill bigger**.
+rtk and caveman each compress one layer; [Headroom](https://github.com/chopratejas/headroom) is the closest peer (input / tool-output, but Python + ML). llmtrim does the whole round-trip, pure-Rust, behind a gate that **can't make your bill bigger**.
 
 | | **llmtrim** | Headroom | rtk | caveman |
 |---|:---:|:---:|:---:|:---:|
-| Whole round-trip — input · output · cache | ✅ | input only | CLI only | output only |
-| **Can't increase your bill** — auto-revert gate | ✅ | ❌ | ✅ | ❌ |
-| Quality measured **live** (A/B — saved *and* kept) | ✅ | offline evals | ❌ | tokens only |
+| Whole round-trip (input · output · cache) | ✅ | input only | CLI only | output only |
+| **Can't increase your bill** (auto-revert gate) | ✅ | ❌ | ✅ | ❌ |
+| Quality measured **live** (A/B: saved *and* kept) | ✅ | offline evals | ❌ | tokens only |
 | No Python · no models · single binary | ✅ | ❌ | ✅ | ✅ |
-| **Overhead it adds / request** | **<10 ms** | ~236 ms | <10 ms | — |
-| Deterministic — no ML variance, no downloads | ✅ | ❌ | ✅ | ✅ |
+| **Overhead it adds / request** | **<10 ms** | ~236 ms | <10 ms | n/a |
+| Deterministic (no ML variance, no downloads) | ✅ | ❌ | ✅ | ✅ |
 
-**Stack them** — llmtrim adds −35% on Claude Code's resent tool schemas *on top of* rtk, and hits **93–98%** on agentic tool-output with the bill measured both ways.
+**Stack them:** llmtrim adds −35% on Claude Code's resent tool schemas *on top of* rtk, and hits **93–98%** on agentic tool-output with the bill measured both ways.
 
 <details>
-<summary><b>llmtrim vs Headroom — feature by feature</b></summary>
+<summary><b>llmtrim vs Headroom: feature by feature</b></summary>
 
 The trade is **pure-Rust simplicity + cache-correctness** vs **ML reach**:
 
 | | llmtrim | Headroom |
 |---|---|---|
 | Runtime | single 47 MB static binary, 0 deps | Python + numpy / onnxruntime / transformers / magika / fastembed (100s MB – GB) |
-| Latency it adds | **<10 ms per request** (0.5 ms at 5 KB → 7 ms at 49k tokens; tokenizer-bound, faster on Anthropic) — negligible next to the model round-trip, and the smaller prompt often makes the call *faster* overall. ~110 ms one-time startup. Measured | **~236 ms** on its own 10,144-token demo\* — llmtrim does ~11k tokens in **2.7 ms**, so **~80× faster on the same workload**; per-request ONNX/magika inference + Python |
-| Models | none — deterministic | ONNX detection (magika) + learned text compressor (Kompress) + embeddings |
+| Latency it adds | **<10 ms per request** (0.5 ms at 5 KB → 7 ms at 49k tokens; tokenizer-bound, faster on Anthropic), negligible next to the model round-trip, and the smaller prompt often makes the call *faster* overall. ~110 ms one-time startup. Measured | **~236 ms** on its own 10,144-token demo\* (llmtrim does ~11k tokens in **2.7 ms**, so **~80× faster on the same workload**); per-request ONNX/magika inference + Python |
+| Models | none (deterministic) | ONNX detection (magika) + learned text compressor (Kompress) + embeddings |
 | Tool output | log / diff / grep + repetitive fallback, adaptive↔aggressive auto-split | SmartCrusher / log / diff / search (ML-assisted) |
 | Cache discipline | frozen-zone guard (never busts the `cache_control` prefix) + tool/schema sort + OpenAI `prompt_cache_key` | live-zone byte-range surgery + cache stabilization |
 | Output side | terse / Chain-of-Draft / token-budget shaping | input-side only |
@@ -104,7 +104,7 @@ The trade is **pure-Rust simplicity + cache-correctness** vs **ML reach**:
 
 </details>
 
-*(We A/B'd caveman's telegraphic style — it backfired with empty replies + hallucinated padding; we ship a neutral one-liner instead.)*
+*(We A/B'd caveman's telegraphic style: it backfired with empty replies + hallucinated padding; we ship a neutral one-liner instead.)*
 
 > **The guarantee neither has:** every stage is checked by the real tokenizer before it ships. No net token win → auto-revert. Upstream rejects it → replay the original verbatim. Worst case is no savings: never a bigger bill, never a broken call.
 
@@ -185,16 +185,16 @@ On agent traffic, `agent`'s tool-description trimming is the big lever, since cl
 
 ## 🧩 What it does to your prompt
 
-Ten stages, ordered by the savings hierarchy `tool-output > retrieve > cache > output > json-sample > serialization > skeleton > dedup > micro-text`. Each fires only if the real-tokenizer gate nets a win, and **never rewrites content under a `cache_control` marker** — so compression can't bust the prompt cache.
+Ten stages, ordered by the savings hierarchy `tool-output > retrieve > cache > output > json-sample > serialization > skeleton > dedup > micro-text`. Each fires only if the real-tokenizer gate nets a win, and **never rewrites content under a `cache_control` marker**, so compression can't bust the prompt cache.
 
 | Stage | Lever | What it does | When it runs |
 |---|---|---|---|
-| **T** tool-output | toolout | lossless template fold first — consecutive runs *and* interleaved parallel-build lines — then window logs · diffs · grep · repetitive dumps to the signal (errors, changes, matches); adaptive↔aggressive auto-split | auto · tool results |
+| **T** tool-output | toolout | lossless template fold first: consecutive runs *and* interleaved parallel-build lines, then window logs · diffs · grep · repetitive dumps to the signal (errors, changes, matches); adaptive↔aggressive auto-split | auto · tool results |
 | **A** cache discipline | cache | mark + stabilize the invariant prefix (sort tools/schema · OpenAI `prompt_cache_key`) so it stays cached across calls | auto · tools |
 | **B** lexical retrieval | retrieve | BM25+ ranking with RM3 feedback (TextRank when query-less) · TextTiling cuts prose at topic shifts · budgeted submodular selection keeps the relevant *non-redundant* chunks; question protected | auto · long context |
 | **C** skeletonization | skeleton | tree-sitter keeps the bodies of the query-relevant functions, drops the rest to signatures - 14 languages | auto · code |
 | **D** serialize + hygiene | serialization | minify JSON, encode record arrays to [TOON](https://crates.io/crates/toon-format)/CSV, Unicode-normalize | always · lossless |
-| **D₊** json sample | json_crush | down-sample huge record arrays — keep first/last + outliers (errors, rare values) + a query-biased *diverse* sample | auto · big JSON |
+| **D₊** json sample | json_crush | down-sample huge record arrays: keep first/last + outliers (errors, rare values) + a query-biased *diverse* sample | auto · big JSON |
 | **E** dedup | dedup | collapse duplicate + near-duplicate lines (prose only; data untouched) | always · exact |
 | **F** output control | output | terse instruction · Chain-of-Draft · token budget · native JSON schema | auto |
 | **G** tool layer | tool | static tool selection + description trimming (schemas resent each call) | auto · tools |
@@ -286,12 +286,12 @@ Under the hood `auto` routes by shape: tools → `agent`, code → `code`, long-
 | `toolout` | `false` → on in `agent`/`aggressive` | Stage T tool-output compression (log / diff / grep + repetitive fallback); positional elision |
 | `toolout_mode` | `"auto"` | Stage T split: `adaptive` · `aggressive` · `auto` (per-segment by noise density) |
 | `toolout_max_lines` / `toolout_min_lines` | `40` / `20` | keep-budget ceiling / skip segments shorter than this |
-| `toolout_template` | `true` | lossless template fold before windowing - consecutive runs (Drain) + interleaved lines (LSH grouping) |
+| `toolout_template` | `true` | lossless template fold before windowing: consecutive runs (Drain) + interleaved lines (LSH grouping) |
 | `skeletonize` / `minify_code` | `false` | Stage C drop bodies / strip indentation (lossless) |
 | `skeleton_keep_full_top_k` | `5` | bodies kept for the top-k functions overlapping the conversation (HCP-graded) |
 | `skeleton_drop_unmatched` / `skeleton_drop_min_body_lines` | `false` / `8` | also drop zero-overlap functions ≥ N lines entirely (on in `aggressive`) |
 | `multimodal` / `image_detail` | `false` | Stage H downscale to the provider's cap |
-| `tool_minify_schema` | `false` → on in `agent`/`aggressive` | minify tool JSON-Schemas in place (drop `title`/`$schema`/`examples`, dedup boilerplate descriptions) — stays valid JSON Schema |
+| `tool_minify_schema` | `false` → on in `agent`/`aggressive` | minify tool JSON-Schemas in place (drop `title`/`$schema`/`examples`, dedup boilerplate descriptions): stays valid JSON Schema |
 | `quality_gate` | `true` | after the token gate, revert a lossy cut whose query-relevant coverage drops below the calibrated threshold ("saved tokens by deleting the answer") |
 | `memo` | `true` | proxy-only turn-stability memo: an already-seen conversation prefix reuses last turn's compressed bytes verbatim, keeping the provider prefix cache warm on agent loops (in-memory only) |
 

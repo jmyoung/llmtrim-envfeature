@@ -236,7 +236,7 @@ enum Commands {
     /// Sends ORIGINAL and COMPRESSED requests, scores both, and prices the
     /// round-trip. Credentials come from the env or a local `.env` (OpenRouter).
     /// `--offline`/`--ablate` measure tokens without any network calls.
-    Bench(BenchArgs),
+    Bench(Box<BenchArgs>),
 }
 
 #[derive(clap::Args)]
@@ -596,7 +596,7 @@ fn run() -> Result<()> {
                 )
             );
         }
-        Commands::Bench(args) => run_bench(args)?,
+        Commands::Bench(args) => run_bench(*args)?,
     }
     Ok(())
 }

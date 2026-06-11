@@ -465,7 +465,7 @@ pub fn snapshot(
     let new_after = s.metered_input_after - s.frozen_input_tokens;
     if s.frozen_input_tokens > 0 && new_before > 0 {
         o.push_str(&axis(color, "input", new_before, new_after));
-        o.push_str(&ui::paint(color, Tone::Dim, "   (new content · cache excluded)"));
+        o.push_str(&ui::paint(color, Tone::Dim, "   (cache excluded)"));
         o.push('\n');
     } else {
         o.push_str(&axis(color, "input", s.input_before, s.input_after));
@@ -887,7 +887,7 @@ mod tests {
             "measured floor on the ladder line: {out}"
         );
         assert!(
-            out.contains("500.0K → 100.0K") && out.contains("(new content · cache excluded)"),
+            out.contains("500.0K → 100.0K") && out.contains("(cache excluded)"),
             "input axis over the compressible surface: {out}"
         );
         assert!(

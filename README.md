@@ -5,7 +5,7 @@
 <h1 align="center">llmtrim</h1>
 
 <p align="center">
-  <strong>Cut the whole LLM bill ~66% - input, output, and cache - with zero extra model calls.</strong>
+  <strong>Cut ~66% off your LLM bill: input, output, and cache, with zero extra model calls.</strong>
 </p>
 
 <p align="center">

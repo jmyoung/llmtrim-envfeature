@@ -290,8 +290,6 @@ mod tests {
         assert!(matches!(channel_of(""), Channel::Binary));
     }
 
-    use super::*;
-
     #[test]
     fn semver_compares() {
         assert!(semver("0.2.0") > semver("0.1.9"));

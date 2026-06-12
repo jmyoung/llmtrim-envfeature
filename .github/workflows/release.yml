@@ -91,6 +91,37 @@ jobs:
         with:
           subject-path: target/${{ matrix.target }}/release/llmtrim${{ runner.os == 'Windows' && '.exe' || '' }}
 
+  # The release verifies itself: run the real installers against the assets just uploaded,
+  # on the same three OSes users have. LLMTRIM_VERSION pins to this tag so the test can't
+  # race `releases/latest`. Catches what unit tests can't: asset naming, checksum sidecars,
+  # archive layout, PowerShell/dash quirks.
+  verify-install:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      LLMTRIM_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: install.sh end-to-end
+        if: runner.os != 'Windows'
+        run: |
+          sh install.sh
+          "$HOME/.local/bin/llmtrim" --version
+          "$HOME/.local/bin/llmtrim" doctor || true   # diagnostic snapshot, not a gate in CI
+      - name: install.ps1 end-to-end
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $exe = Join-Path $env:LOCALAPPDATA 'llmtrim\bin\llmtrim.exe'
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
   # Publish to crates.io so `cargo install llmtrim` works (not just --git). Uses Trusted
   # Publishing (OIDC): the auth action exchanges this job's GitHub identity for a
   # short-lived publish token — no long-lived secret. Configured at crates.io → llmtrim →

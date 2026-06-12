@@ -24,3 +24,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # The @1.88 ref selects the MSRV toolchain, not an action version — a Dependabot
+      # bump here silently rewrites the MSRV job to test the wrong Rust. Bump it only
+      # by hand, together with `rust-version` in Cargo.toml and the CI job name.
+      - dependency-name: "dtolnay/rust-toolchain"

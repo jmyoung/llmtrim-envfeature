@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-12
+
+### Fixed
+- **Binary installers verify checksums again**: `install.sh` / `install.ps1` requested
+  `<archive>.tar.gz.sha256` while CI uploads `<name>.sha256` — every prebuilt install
+  failed (404) at the verification step.
+- **`cargo install llmtrim` compiles again**: capped transitive `time` below 0.3.48,
+  whose new blanket trait impl collides with `rcgen 0.14` (E0119) on a fresh, un-locked
+  resolve. Install docs and the `update` hint now recommend `cargo install --locked`.
+
+### Changed
+- Release pipeline hardening: crates.io publishing via Trusted Publishing (OIDC, no
+  stored token), Homebrew tap bump as a plain script, least-privilege CI permissions.
+
 ## [0.1.0] - 2026-06-12
 
 Initial public release. llmtrim is a static, deterministic LLM prompt/payload compressor —
@@ -89,5 +103,6 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fkiene/llmtrim/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fkiene/llmtrim/releases/tag/v0.1.0

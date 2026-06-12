@@ -296,22 +296,54 @@ pub(crate) fn truncate_chars(s: &mut String, max: usize) {
 /// Marker spliced between kept sentences that are not adjacent in the source.
 const ELISION: &str = " … ";
 
-/// Salience-aware sentence selection: keep the first sentence, then fill the
-/// remaining budget with the highest-scoring sentences (ties broken by source
-/// order), emitted in original order with `ELISION` over skipped runs.
-/// `None` when the first sentence alone does not fit (caller falls back).
-fn select_salient_sentences(s: &str, max: usize) -> Option<String> {
-    use unicode_segmentation::UnicodeSegmentation;
+/// A selectable unit of the source text: a sentence span, or a structurally
+/// detected list block (optional intro line ending with `:` plus consecutive
+/// marker lines with identifier-shaped heads) carrying the data needed to
+/// emit a compacted form when the full block does not fit.
+struct Unit<'a> {
+    start: usize, // byte offsets into the source
+    end: usize,
+    list: Option<ListInfo<'a>>,
+}
 
-    let sents: Vec<&str> = s.split_sentence_bounds().collect();
-    let chars: Vec<usize> = sents.iter().map(|u| u.trim_end().chars().count()).collect();
-    if sents.is_empty() || chars[0] > max {
+struct ListInfo<'a> {
+    intro: Option<&'a str>,
+    heads: Vec<&'a str>,
+}
+
+/// How a unit is emitted: dropped, verbatim, or as a compacted list.
+enum Keep {
+    No,
+    Full,
+    Compact(String),
+}
+
+/// Salience-aware unit selection: keep the first sentence, then fill the
+/// remaining budget with the highest-scoring units (ties broken by source
+/// order), emitted in original order with `ELISION` over skipped runs.
+/// List units that do not fit whole fall back to their compacted form
+/// (intro + item heads) rather than being dropped.
+/// `None` when the first unit alone does not fit (caller falls back).
+fn select_salient_sentences(s: &str, max: usize) -> Option<String> {
+    let units = segment_units(s);
+    let chars: Vec<usize> = units
+        .iter()
+        .map(|u| s[u.start..u.end].trim_end().chars().count())
+        .collect();
+    if units.is_empty() || chars[0] > max {
         return None;
     }
 
     // Rank candidates (all but the mandatory first) by identifier density.
-    let mut ranked: Vec<usize> = (1..sents.len()).collect();
-    let scores: Vec<f64> = sents.iter().map(|u| identifier_density(u)).collect();
+    // Lists are scored on their compactable core (intro + heads).
+    let scores: Vec<f64> = units
+        .iter()
+        .map(|u| match &u.list {
+            Some(l) => identifier_density(&compact_core(l)),
+            None => identifier_density(&s[u.start..u.end]),
+        })
+        .collect();
+    let mut ranked: Vec<usize> = (1..units.len()).collect();
     ranked.sort_by(|&a, &b| {
         scores[b]
             .partial_cmp(&scores[a])
@@ -320,47 +352,241 @@ fn select_salient_sentences(s: &str, max: usize) -> Option<String> {
     });
 
     let elision_chars = ELISION.chars().count();
-    let mut keep = vec![false; sents.len()];
-    keep[0] = true;
+    let mut keep: Vec<Keep> = units.iter().map(|_| Keep::No).collect();
+    keep[0] = Keep::Full;
     let mut used = chars[0];
     for i in ranked {
-        // Pessimistic cost: the sentence plus one elision marker for the gap
-        // it may open. Adjacent picks undershoot, which is fine.
+        // Pessimistic cost: the unit plus one elision marker for the gap it
+        // may open. Adjacent picks undershoot, which is fine.
         if used + chars[i] + elision_chars <= max {
-            keep[i] = true;
             used += chars[i] + elision_chars;
+            keep[i] = Keep::Full;
+        } else if let Some(list) = &units[i].list {
+            // Compaction tier: the whole block does not fit, but the intro
+            // plus item heads (or a prefix of them ending ", …") might.
+            let budget = max.saturating_sub(used + elision_chars);
+            if let Some(text) = compact_list(list, budget) {
+                used += text.chars().count() + elision_chars;
+                keep[i] = Keep::Compact(text);
+            }
         }
     }
 
-    // Rebuild from contiguous runs of the original text so adjacent sentences
-    // keep their exact source bytes (no separator is invented between them).
+    // Rebuild from contiguous runs of the original text so adjacent verbatim
+    // units keep their exact source bytes (no separator is invented between
+    // them). Compacted lists are synthesized text, joined with a space when
+    // adjacent to the previous kept unit and ELISION otherwise.
     let mut out = String::new();
-    let mut offset = 0usize;
-    let mut run_start: Option<usize> = None; // byte offset where current run began
-    for (i, u) in sents.iter().enumerate() {
-        if keep[i] && run_start.is_none() {
-            if !out.is_empty() {
-                out.push_str(ELISION);
+    let mut run_start: Option<usize> = None;
+    let mut last_kept: Option<usize> = None;
+    for (i, u) in units.iter().enumerate() {
+        match &keep[i] {
+            Keep::No => {
+                if let Some(start) = run_start.take() {
+                    out.push_str(s[start..u.start].trim_end());
+                }
             }
-            run_start = Some(offset);
-        }
-        if !keep[i]
-            && let Some(start) = run_start.take()
-        {
-            out.push_str(s[start..offset].trim_end());
-        }
-        offset += u.len();
-        if i + 1 == sents.len()
-            && let Some(start) = run_start.take()
-        {
-            out.push_str(s[start..offset].trim_end());
+            Keep::Full => {
+                if run_start.is_none() {
+                    if !out.is_empty() {
+                        out.push_str(separator(last_kept, i));
+                    }
+                    run_start = Some(u.start);
+                }
+                last_kept = Some(i);
+            }
+            Keep::Compact(text) => {
+                if let Some(start) = run_start.take() {
+                    out.push_str(s[start..u.start].trim_end());
+                }
+                if !out.is_empty() {
+                    out.push_str(separator(last_kept, i));
+                }
+                out.push_str(text);
+                last_kept = Some(i);
+            }
         }
     }
-    // Trailing ellipsis only when the tail itself was dropped — interior
-    // elisions are already marked.
-    if !keep[sents.len() - 1] {
-        out.push('…');
+    if let Some(start) = run_start.take()
+        && let Some(u) = units.last()
+    {
+        out.push_str(s[start..u.end].trim_end());
     }
+    // Trailing ellipsis only when tail content was dropped — interior
+    // elisions are already marked, and a partial compact ends with "…".
+    match &keep[units.len() - 1] {
+        Keep::No => out.push('…'),
+        Keep::Compact(t) if !t.ends_with('…') => out.push('…'),
+        _ => {}
+    }
+    Some(out)
+}
+
+/// Space when unit `i` immediately follows the previously kept unit (nothing
+/// was dropped between them), ELISION otherwise.
+fn separator(last_kept: Option<usize>, i: usize) -> &'static str {
+    if last_kept.is_some_and(|p| p + 1 == i) {
+        " "
+    } else {
+        ELISION
+    }
+}
+
+/// Split the source into selectable units: list blocks (detected structurally
+/// by line shape, never by content language) interleaved with sentence spans.
+fn segment_units(s: &str) -> Vec<Unit<'_>> {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut off = 0usize;
+    for l in s.split_inclusive('\n') {
+        lines.push((off, l));
+        off += l.len();
+    }
+
+    let mut units = Vec::new();
+    let mut plain_start = 0usize;
+    let mut i = 0usize;
+    while i < lines.len() {
+        // A block starts at an item line, or at an intro line ending with ':'
+        // immediately followed by an item line.
+        // The intro is only the *last sentence* of its line — earlier
+        // sentences sharing the line stay ordinary prose.
+        let (intro, intro_start, first_item) = if item_head(lines[i].1).is_some() {
+            (None, 0, i)
+        } else if lines[i].1.trim_end().ends_with(':')
+            && i + 1 < lines.len()
+            && item_head(lines[i + 1].1).is_some()
+        {
+            let rel = last_sentence_offset(lines[i].1);
+            (Some(lines[i].1[rel..].trim()), rel, i + 1)
+        } else {
+            i += 1;
+            continue;
+        };
+        let mut j = first_item;
+        let mut heads = Vec::new();
+        while j < lines.len()
+            && let Some(h) = item_head(lines[j].1)
+        {
+            heads.push(h);
+            j += 1;
+        }
+        if heads.len() < 2 {
+            // A lone marker line is ordinary text, not a list.
+            i = j;
+            continue;
+        }
+        let block_start = if intro.is_some() {
+            lines[i].0 + intro_start
+        } else {
+            lines[first_item].0
+        };
+        let block_end = lines[j - 1].0 + lines[j - 1].1.len();
+        push_sentences(s, plain_start, block_start, &mut units);
+        units.push(Unit {
+            start: block_start,
+            end: block_end,
+            list: Some(ListInfo { intro, heads }),
+        });
+        plain_start = block_end;
+        i = j;
+    }
+    push_sentences(s, plain_start, s.len(), &mut units);
+    units
+}
+
+/// Byte offset of the last non-whitespace sentence within `line`.
+fn last_sentence_offset(line: &str) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut off = 0usize;
+    let mut last = 0usize;
+    for sent in line.split_sentence_bounds() {
+        if !sent.trim().is_empty() {
+            last = off;
+        }
+        off += sent.len();
+    }
+    last
+}
+
+/// Append the sentence spans of `s[start..end]` as verbatim units.
+fn push_sentences<'a>(s: &'a str, start: usize, end: usize, units: &mut Vec<Unit<'a>>) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut off = start;
+    for sent in s[start..end].split_sentence_bounds() {
+        if !sent.trim().is_empty() {
+            units.push(Unit {
+                start: off,
+                end: off + sent.len(),
+                list: None,
+            });
+        }
+        off += sent.len();
+    }
+}
+
+/// Head of a list item line: the leading identifier-shaped token(s) of a
+/// bullet/dash/numbered line, up to the first `:`, `(` or `—`. `None` when
+/// the line is not item-shaped or its head is not code-like.
+fn item_head(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    let body = if let Some(r) = t.strip_prefix(['-', '*', '•', '–']) {
+        r
+    } else {
+        let digits = t.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        t[digits..].strip_prefix(['.', ')'])?
+    };
+    // Require whitespace after the marker so prose like "--flag" or "3.14"
+    // never reads as an item.
+    if !body.starts_with([' ', '\t']) {
+        return None;
+    }
+    let body = body.trim();
+    let end = body.find([':', '(', '—']).unwrap_or(body.len());
+    let head = body[..end].trim();
+    if head.is_empty() || !head.split_whitespace().all(is_code_like) {
+        return None;
+    }
+    Some(head)
+}
+
+/// Compacted core of a list: intro (if any) + item heads joined by ", ".
+fn compact_core(list: &ListInfo) -> String {
+    let mut out = list.intro.map(|i| format!("{i} ")).unwrap_or_default();
+    out.push_str(&list.heads.join(", "));
+    out
+}
+
+/// Compacted list fitting `budget` chars: the full core if it fits, else as
+/// many whole heads as fit ending with ", …". Heads are never cut inside.
+/// `None` when not even one head fits.
+fn compact_list(list: &ListInfo, budget: usize) -> Option<String> {
+    let full = compact_core(list);
+    if full.chars().count() <= budget {
+        return Some(full);
+    }
+    let mut out = list.intro.map(|i| format!("{i} ")).unwrap_or_default();
+    let tail_chars = ", …".chars().count();
+    let mut used = out.chars().count();
+    let mut kept = 0usize;
+    for h in &list.heads {
+        let add = h.chars().count() + if kept > 0 { 2 } else { 0 };
+        if used + add + tail_chars > budget {
+            break;
+        }
+        if kept > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(h);
+        used += add;
+        kept += 1;
+    }
+    if kept == 0 {
+        return None;
+    }
+    out.push_str(", …");
     Some(out)
 }
 
@@ -607,6 +833,73 @@ mod tests {
         assert!(out.contains("`run_command`"), "{out}");
         assert!(out.contains(" … "), "{out}");
         assert!(!out.ends_with('…'), "{out}");
+    }
+
+    #[test]
+    fn late_list_compacts_to_heads() {
+        // Shaped like the real Agent-tool case: long description whose only
+        // enumeration of valid argument values is a late bullet list with
+        // 150+ char items — none fits whole in the leftover budget.
+        let heads = [
+            "general-purpose",
+            "rtk-testing-specialist",
+            "code-reviewer",
+            "test-runner",
+            "doc-writer",
+            "perf-auditor",
+            "release-manager",
+            "security-scanner",
+            "data-migrator",
+            "ui-builder",
+            "api-designer",
+            "log-analyzer",
+            "infra-planner",
+        ];
+        let mut input =
+            String::from("Launch a new agent to handle complex, multi-step tasks autonomously. ");
+        for _ in 0..6 {
+            input.push_str(
+                "Each agent runs independently and reports back a single result \
+                 when it completes the work it was given. ",
+            );
+        }
+        input.push_str("Available agent types:\n");
+        for h in &heads {
+            input.push_str(&format!(
+                "- {h}: Use this agent when the task requires that speciality, \
+                 with full access to the relevant context and the usual set of \
+                 capabilities for reading, editing and executing project files \
+                 (Tools: Read, Edit, Bash)\n"
+            ));
+        }
+        let out = trunc(&input, 300);
+        assert!(out.chars().count() <= 301, "{out}"); // budget + trailing …
+        assert!(
+            out.starts_with("Launch a new agent to handle complex, multi-step tasks autonomously."),
+            "{out}"
+        );
+        assert!(out.contains("Available agent types:"), "{out}");
+        let present = heads.iter().filter(|h| out.contains(*h)).count();
+        // All heads, or most heads with the ", …" continuation tail.
+        assert!(
+            present == heads.len() || (present >= heads.len() / 2 && out.contains(", …")),
+            "only {present}/13 heads in: {out}"
+        );
+        // Heads are never cut inside: every kept head appears verbatim, and
+        // item bodies are gone.
+        assert!(!out.contains("Use this agent when"), "{out}");
+    }
+
+    #[test]
+    fn prose_only_unchanged_by_list_tier() {
+        // No list shape anywhere: behavior identical to plain sentence
+        // selection (same as before the compaction tier existed).
+        let input =
+            "First sentence here. Second sentence is longer. Third one overflows the budget.";
+        assert_eq!(
+            trunc(input, 50),
+            "First sentence here. Second sentence is longer.…"
+        );
     }
 
     #[test]

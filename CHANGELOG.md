@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Range-fold for regular sequences in tool-output template folds**: when a folded
+  log's parameter column is a regular sequence — constant values, arithmetic integers,
+  or constant-step ISO-8601-like timestamps — the explicit value list collapses to a
+  lossless range (`[×30: (10:02:00Z..10:02:29Z step 1s; 0..29)]`). Every value stays
+  byte-exactly reconstructible (a round-trip check gates each fold); irregular columns
+  keep the explicit list, and a range is emitted only when strictly shorter. On the
+  README's build-log example the same request now compresses −71% instead of −62%.
+- **Missed-fold telemetry in the capture loop**: with `LLMTRIM_CAPTURE_DIR` set,
+  datetime-ish columns that fall back to the explicit list are logged to
+  `missed_folds.jsonl` (reason + 5-value sample), so real traffic — not guesswork —
+  decides which timestamp shapes the range fold learns next. Zero overhead when
+  capture is off; a write failure can never break a fold.
+
 ### Fixed
 - **Re-run → passthrough rail now survives non-deterministic output**: the rail that
   ships a re-invoked tool's output in full used raw-text equality, so any run-to-run

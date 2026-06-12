@@ -11,14 +11,13 @@ verify = false       # CI is the verifier; keep the release command fast
 push = true
 tag-name = "v{{version}}"
 pre-release-commit-message = "release: v{{version}}"
-post-release-commit-message = "chore: main is {{next_version}} after the v{{version}} release"
-
-# After tagging, bump to the next patch version with a -dev suffix on main.
-dev-version = true
-dev-version-ext = "dev"
+# cargo-release 1.x dropped the built-in dev-version bump; after a release, run:
+#   cargo release version <next>-dev -x && git commit -am "chore: main is <next>-dev" && git push
 
 # CHANGELOG: stamp the released section and re-seed [Unreleased] + link refs.
 pre-release-replacements = [
   { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
-  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: https://github.com/fkiene/llmtrim/compare/v[0-9.]+\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/fkiene/llmtrim/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/fkiene/llmtrim/compare/v{{prev_version}}...v{{version}}", exactly = 1 },
+  # $1 captures the previous release tag from the existing link — {{prev_version}} would
+  # give the -dev version, producing a bogus compare URL.
+  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: https://github.com/fkiene/llmtrim/compare/(v[0-9.]+)\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/fkiene/llmtrim/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/fkiene/llmtrim/compare/${1}...v{{version}}", exactly = 1 },
 ]

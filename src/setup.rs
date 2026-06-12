@@ -944,25 +944,15 @@ fn remove_bin_dir_from_path() -> Result<bool> {
 }
 
 /// Schedule deletion of the install dir once we've exited. A running `.exe` can't be unlinked
-/// on Windows, so spawn a detached `cmd` that waits (~2 s via `ping`, the reliable console-less
-/// delay) then `rmdir`s the tree. Best-effort: uninstall never fails on this.
+/// on Windows, so spawn a detached `cmd` that retries the delete for ~60 s — one shot after a
+/// fixed delay loses the race when the shell or Defender still holds the freshly-exited exe.
+/// Best-effort: uninstall never fails on this.
 #[cfg(windows)]
 fn schedule_dir_removal(dir: &std::path::Path) {
-    use std::os::windows::process::CommandExt;
-    use std::process::Stdio;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = format!(
-        "ping 127.0.0.1 -n 3 >nul & rmdir /s /q \"{}\"",
+    schedule_removal_script(&format!(
+        "rmdir /s /q \"{0}\" >nul 2>&1 & if not exist \"{0}\" exit",
         dir.display()
-    );
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", &script])
-        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    ));
 }
 
 /// Schedule deletion of a single file once we've exited — the running-`.exe` self-delete for
@@ -970,14 +960,24 @@ fn schedule_dir_removal(dir: &std::path::Path) {
 /// `~/.cargo/bin`). Same detached-`cmd` trick as [`schedule_dir_removal`], `del` not `rmdir`.
 #[cfg(windows)]
 fn schedule_file_removal(file: &std::path::Path) {
+    schedule_removal_script(&format!(
+        "del /f /q \"{0}\" >nul 2>&1 & if not exist \"{0}\" exit",
+        file.display()
+    ));
+}
+
+/// Run `attempt` (which must `exit` on success) every ~2 s for ~60 s in a detached,
+/// windowless `cmd`. `ping` is the reliable console-less delay; the retry loop covers the
+/// window where the just-exited exe is still locked (shell handle inheritance, Defender
+/// scanning fresh executables).
+#[cfg(windows)]
+fn schedule_removal_script(attempt: &str) {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let script = format!(
-        "ping 127.0.0.1 -n 3 >nul & del /f /q \"{}\"",
-        file.display()
-    );
+    let script =
+        format!("for /l %i in (1,1,30) do (ping 127.0.0.1 -n 3 >nul & {attempt})");
     let _ = std::process::Command::new("cmd")
         .args(["/c", &script])
         .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)

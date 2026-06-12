@@ -321,28 +321,32 @@ fn extract_code(answer: &str) -> String {
     answer.to_string()
 }
 
-/// pass@1: run the model's function against HumanEval's `test` harness (`gold` is JSON
-/// `{"test":…, "entry_point":…}`). Returns 1.0 iff the assembled program exits cleanly.
-///
-/// SECURITY: this executes **untrusted, model-generated code**. It is sandboxed only by
-/// best-effort, defense-in-depth measures — NOT a security boundary. Run the bench on
-/// throwaway/CI hosts, never against secrets or production credentials. The hardening:
-/// `python3 -I` (isolated: ignore `PYTHON*` env, user site-packages, and `$CWD` on the
-/// import path), POSIX `setrlimit` caps (CPU seconds, address space, file size, no new
-/// processes) injected as a preamble, and a hard `wait-timeout` wall-clock kill (no
-/// dependency on an external `timeout` binary). A small import preamble covers the
-/// typing/math names HumanEval prompts assume, so a correct body isn't failed for an
-/// import the chat model omitted.
-fn pass_at_one(answer: &str, gold: &str, timeout_secs: u64) -> f64 {
-    let Ok(g) = serde_json::from_str::<Value>(gold) else {
-        return 0.0;
-    };
-    let (Some(test), Some(entry)) = (
-        g.get("test").and_then(Value::as_str),
-        g.get("entry_point").and_then(Value::as_str),
-    ) else {
-        return 0.0;
-    };
+/// First Python interpreter that answers `--version`: `python3`, then `python` (the
+/// usual binary name on Windows, where `python3` may only exist as a broken Store stub).
+fn python_interpreter() -> &'static str {
+    static PY: Lazy<&'static str> = Lazy::new(|| {
+        ["python3", "python"]
+            .into_iter()
+            .find(|c| {
+                std::process::Command::new(c)
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            })
+            .unwrap_or("python3")
+    });
+    &PY
+}
+
+/// The assembled, self-contained pass@1 program, or None when `gold` is malformed.
+/// Split from `pass_at_one` so tests can re-run it with stderr visible on failure.
+fn passk_program(answer: &str, gold: &str, timeout_secs: u64) -> Option<String> {
+    let g = serde_json::from_str::<Value>(gold).ok()?;
+    let test = g.get("test").and_then(Value::as_str)?;
+    let entry = g.get("entry_point").and_then(Value::as_str)?;
     let code = extract_code(answer);
     // Best-effort in-process resource caps (POSIX): CPU time ~= the wall budget, 512 MiB
     // address space, no file writes, no forked subprocesses. Wrapped in try/except so a
@@ -359,14 +363,33 @@ fn pass_at_one(answer: &str, gold: &str, timeout_secs: u64) -> f64 {
         cpu = timeout_secs.max(1)
     );
     let preamble = "from typing import List, Dict, Tuple, Optional, Any\nimport math, re, collections, itertools, functools\n";
-    let program = format!("{limits}{preamble}\n{code}\n\n{test}\n\ncheck({entry})\n");
+    Some(format!(
+        "{limits}{preamble}\n{code}\n\n{test}\n\ncheck({entry})\n"
+    ))
+}
 
+/// pass@1: run the model's function against HumanEval's `test` harness (`gold` is JSON
+/// `{"test":…, "entry_point":…}`). Returns 1.0 iff the assembled program exits cleanly.
+///
+/// SECURITY: this executes **untrusted, model-generated code**. It is sandboxed only by
+/// best-effort, defense-in-depth measures — NOT a security boundary. Run the bench on
+/// throwaway/CI hosts, never against secrets or production credentials. The hardening:
+/// `python3 -I` (isolated: ignore `PYTHON*` env, user site-packages, and `$CWD` on the
+/// import path), POSIX `setrlimit` caps (CPU seconds, address space, file size, no new
+/// processes) injected as a preamble, and a hard `wait-timeout` wall-clock kill (no
+/// dependency on an external `timeout` binary). A small import preamble covers the
+/// typing/math names HumanEval prompts assume, so a correct body isn't failed for an
+/// import the chat model omitted.
+fn pass_at_one(answer: &str, gold: &str, timeout_secs: u64) -> f64 {
+    let Some(program) = passk_program(answer, gold, timeout_secs) else {
+        return 0.0;
+    };
     let seq = EXEC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("dp_passk_{}_{}.py", std::process::id(), seq));
     if std::fs::write(&path, program.as_bytes()).is_err() {
         return 0.0;
     }
-    let spawned = std::process::Command::new("python3")
+    let spawned = std::process::Command::new(python_interpreter())
         .arg("-I") // isolated mode: ignore env/user-site/cwd on the import path
         .arg(&path)
         .stdout(std::process::Stdio::null())
@@ -1477,13 +1500,36 @@ mod tests {
     }
 
     fn python_available() -> bool {
-        std::process::Command::new("python3")
+        std::process::Command::new(python_interpreter())
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+    }
+
+    /// Re-run the assembled pass@1 program with output captured, so a CI-only failure
+    /// (e.g. Windows) reports the interpreter's actual error instead of a bare 0.0.
+    fn passk_diagnostics(answer: &str, gold: &str) -> String {
+        let program = passk_program(answer, gold, 10).expect("gold is valid");
+        let path = std::env::temp_dir().join(format!("dp_passk_diag_{}.py", std::process::id()));
+        std::fs::write(&path, &program).expect("write diag program");
+        let out = std::process::Command::new(python_interpreter())
+            .arg("-I")
+            .arg(&path)
+            .output();
+        let _ = std::fs::remove_file(&path);
+        match out {
+            Ok(o) => format!(
+                "interpreter={} exit={:?}\nstdout: {}\nstderr: {}",
+                python_interpreter(),
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr),
+            ),
+            Err(e) => format!("interpreter={} spawn failed: {e}", python_interpreter()),
+        }
     }
 
     #[test]
@@ -1499,7 +1545,12 @@ mod tests {
         .to_string();
         let good = "```python\ndef sq(x):\n    return x * x\n```";
         let bad = "```python\ndef sq(x):\n    return x + x\n```";
-        assert_eq!(pass_at_one(good, &gold, 10), 1.0, "correct solution passes");
+        assert_eq!(
+            pass_at_one(good, &gold, 10),
+            1.0,
+            "correct solution passes — {}",
+            passk_diagnostics(good, &gold)
+        );
         assert_eq!(pass_at_one(bad, &gold, 10), 0.0, "wrong solution fails");
         // malformed gold → 0, never panics.
         assert_eq!(pass_at_one(good, "not json", 10), 0.0);

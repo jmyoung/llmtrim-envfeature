@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`setup` reclaims orphaned daemons**: when the default port is busy, setup now
+  identifies the holder (native OS tools); an old llmtrim daemon — e.g. left running
+  after `npm uninstall`, which can't stop it — is killed and the default port reclaimed
+  instead of silently drifting to the next port. Foreign holders are named in the note
+  ("busy (chrome.exe, pid 123)").
+
 ### Fixed
 - **`uninstall` no longer deletes package-manager-owned binaries**: under an npm /
   cargo / Homebrew install it keeps the file and prints the manager's uninstall command

@@ -32,6 +32,86 @@ fn first_free_port(start: u16, span: u16) -> Option<u16> {
         .find(|&p| TcpListener::bind((Ipv4Addr::LOCALHOST, p)).is_ok())
 }
 
+/// (pid, process name) of whatever LISTENs on `port`, via the platform's native tools —
+/// a cold setup-time path, so shelling out beats adding a process-inspection dependency.
+/// Best-effort: any parse failure is `None` and the caller falls back to the plain note.
+fn port_holder(port: u16) -> Option<(u32, String)> {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("netstat")
+            .args(["-ano"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        let pid: u32 = text
+            .lines()
+            .filter(|l| l.contains("LISTENING") && l.contains(&needle))
+            .filter_map(|l| l.split_whitespace().last()?.parse().ok())
+            .next()?;
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        let name = line
+            .trim()
+            .trim_start_matches('"')
+            .split('"')
+            .next()?
+            .to_string();
+        (!name.is_empty()).then_some((pid, name))
+    }
+    #[cfg(unix)]
+    {
+        // `ss -ltnp` prints `users:(("name",pid=123,fd=7))`; fall back to lsof.
+        if let Ok(out) = std::process::Command::new("ss")
+            .args(["-ltnp", &format!("sport = :{port}")])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(users) = text.split("users:((\"").nth(1) {
+                let name = users.split('"').next().unwrap_or_default().to_string();
+                if let Some(pid) = users.split("pid=").nth(1).and_then(|s| {
+                    s.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .parse()
+                        .ok()
+                }) {
+                    return Some((pid, name));
+                }
+            }
+        }
+        let out = std::process::Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let pid = text.lines().find(|l| l.starts_with('p'))?[1..]
+            .parse()
+            .ok()?;
+        let name = text.lines().find(|l| l.starts_with('c'))?[1..].to_string();
+        Some((pid, name))
+    }
+}
+
+/// Force-kill a process we identified as an orphaned llmtrim. Best-effort by design.
+fn kill_pid(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
+    }
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
+}
+
 /// Outcome of resolving which port to wire: a definite port to use, or a starting point to
 /// scan from for a free one. Split out so the precedence is pure and unit-testable.
 #[derive(Debug, PartialEq, Eq)]
@@ -115,7 +195,7 @@ pub fn run(requested: Option<u16>) -> Result<()> {
     let running_port = running.as_ref().map(|s| s.port);
     let configured = configured_port();
     let pinned = requested.or(running_port).or(configured);
-    let port = match choose_port(requested, running_port, configured) {
+    let mut port = match choose_port(requested, running_port, configured) {
         PortChoice::Use(p) => p,
         PortChoice::ScanFrom(start) => first_free_port(start, 64)
             .with_context(|| format!("no free port in {start}..={}", start.saturating_add(64)))?,
@@ -123,10 +203,58 @@ pub fn run(requested: Option<u16>) -> Result<()> {
     // Only chatter about the port when we had to pick one nobody asked for (first install,
     // default busy). When we're reusing a pinned port, silence is correct.
     if pinned.is_none() && port != DEFAULT_PORT {
-        println!(
-            "{}",
-            ui::note(color, &format!("Port {DEFAULT_PORT} busy — using {port}."))
-        );
+        // Who holds the default? An orphaned llmtrim (binary replaced/removed while the
+        // old daemon kept running — e.g. `npm uninstall` can't stop it) is reclaimed
+        // instead of silently drifting ports and stranding the zombie.
+        match port_holder(DEFAULT_PORT) {
+            Some((pid, name)) if name.to_lowercase().contains("llmtrim") => {
+                kill_pid(pid);
+                // Give the OS a moment to release the socket, then take the default back.
+                for _ in 0..20 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).is_ok() {
+                        port = DEFAULT_PORT;
+                        break;
+                    }
+                }
+                if port == DEFAULT_PORT {
+                    println!(
+                        "{}",
+                        ui::note(
+                            color,
+                            &format!(
+                                "Stopped an orphaned llmtrim daemon (pid {pid}) holding port {DEFAULT_PORT}."
+                            )
+                        )
+                    );
+                } else {
+                    println!(
+                        "{}",
+                        ui::note(
+                            color,
+                            &format!(
+                                "Port {DEFAULT_PORT} held by an old llmtrim (pid {pid}) that wouldn't die — using {port}."
+                            )
+                        )
+                    );
+                }
+            }
+            Some((pid, name)) => {
+                println!(
+                    "{}",
+                    ui::note(
+                        color,
+                        &format!("Port {DEFAULT_PORT} busy ({name}, pid {pid}) — using {port}.")
+                    )
+                );
+            }
+            None => {
+                println!(
+                    "{}",
+                    ui::note(color, &format!("Port {DEFAULT_PORT} busy — using {port}."))
+                );
+            }
+        }
     }
 
     // Steps are collected as checklist rows and rendered as one summary panel at the

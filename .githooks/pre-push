@@ -21,12 +21,19 @@ if ! git diff --quiet @{push} -- Formula/ 2>/dev/null || ! git rev-parse --quiet
     fi
 fi
 
-# Secret scan over full history — last line of defense before anything lands on the public repo.
-echo "pre-push: gitleaks"
+# Secret scan — last line of defense before anything lands on the public repo.
+# Only the commits being pushed (@{push}..) so cost stays O(new commits); full
+# history on first push of a branch (no upstream yet).
+if git rev-parse --quiet --verify @{push} >/dev/null 2>&1; then
+    LOG_OPTS="--log-opts=@{push}.."
+else
+    LOG_OPTS=""
+fi
+echo "pre-push: gitleaks ${LOG_OPTS:-(full history)}"
 if command -v gitleaks >/dev/null 2>&1; then
-    gitleaks detect --source . --redact --no-banner
+    gitleaks detect --source . --redact --no-banner ${LOG_OPTS:+"$LOG_OPTS"}
 elif command -v docker >/dev/null 2>&1; then
-    docker run --rm -v "$(pwd)":/repo zricethezav/gitleaks:latest detect --source /repo --redact --no-banner
+    docker run --rm -v "$(pwd)":/repo zricethezav/gitleaks:latest detect --source /repo --redact --no-banner ${LOG_OPTS:+"$LOG_OPTS"}
 else
     echo "pre-push: WARNING: gitleaks not available (no gitleaks binary, no docker) — secrets NOT scanned" >&2
 fi

@@ -72,11 +72,14 @@ scoop install llmtrim
 For containers and CI — runs the proxy with the state on a volume:
 
 ```bash
-docker run -d -p 43117:43117 -v llmtrim-state:/data ghcr.io/fkiene/llmtrim
+docker run -d --name llmtrim -p 43117:43117 -v llmtrim-state:/data ghcr.io/fkiene/llmtrim
+# wire your shell to it (CA comes out of the container, no manual file hunting):
+docker run --rm -v llmtrim-state:/data ghcr.io/fkiene/llmtrim ca --pem > ~/.llmtrim-ca.pem
+export HTTPS_PROXY=http://localhost:43117 NODE_EXTRA_CA_CERTS=~/.llmtrim-ca.pem
 ```
 
-The image binds `0.0.0.0` inside the container (set `LLMTRIM_BIND` to change); point your
-tools at it with `HTTPS_PROXY=http://localhost:43117` and trust the CA from the volume.
+The image binds `0.0.0.0` inside the container (set `LLMTRIM_BIND` to change). The two
+`export`s are the whole client side — put them in your shell profile or your CI job env.
 
 ## From source
 

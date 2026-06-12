@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
 - **`LLMTRIM_BIND`**: `serve` binds an explicit IP (default stays loopback — a MITM
   proxy must not be reachable off-host unless asked). The Docker image sets `0.0.0.0`
   so port mapping works.
+- **`ca --pem`**: print the CA certificate PEM to stdout — pipe it out of a container
+  straight into `NODE_EXTRA_CA_CERTS`, no volume spelunking.
 
 ### Fixed
 - **Windows uninstall self-delete**: a single delete attempt 2 s after exit lost the

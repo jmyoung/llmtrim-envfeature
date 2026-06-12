@@ -215,7 +215,12 @@ enum Commands {
     ///
     /// Generates the CA on first run. Required once before `serve` can intercept
     /// HTTPS; the CA is name-constrained to LLM API domains only.
-    Ca,
+    Ca {
+        /// Print the certificate PEM to stdout (for piping out of containers:
+        /// `docker run --rm -v llmtrim-state:/data ghcr.io/fkiene/llmtrim ca --pem > ca.pem`)
+        #[arg(long)]
+        pem: bool,
+    },
     /// Measure retrieval recall + token savings on a corpus
     ///
     /// Runs the lexical-retrieval stage over a held-out corpus JSONL and reports
@@ -495,9 +500,14 @@ fn run() -> Result<()> {
                 );
             }
         }
-        Commands::Ca => {
+        Commands::Ca { pem } => {
             let path = llmtrim::serve::ca_cert_path()?;
             llmtrim::serve::ensure_ca()?; // generate on first run
+            if pem {
+                // Bare PEM for piping (e.g. out of a container into NODE_EXTRA_CA_CERTS).
+                print!("{}", std::fs::read_to_string(&path)?);
+                return Ok(());
+            }
             let color = ui::color_stdout();
             print!(
                 "{}",

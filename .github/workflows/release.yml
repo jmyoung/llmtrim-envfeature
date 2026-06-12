@@ -136,6 +136,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
+      # publish's verify build runs under target/package/ and cargo config discovery walks
+      # UP into the repo — a committed .cargo/ (e.g. a local linker setting) would poison
+      # it even when excluded from the package (broke v0.1.2 and v0.1.3).
+      - run: rm -rf .cargo
       - run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

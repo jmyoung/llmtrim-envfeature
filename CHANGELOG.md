@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **crates.io publish (for real this time)**: excluding `.cargo/` from the package
+  wasn't enough — `cargo publish`'s verify build runs under `target/package/` and
+  cargo's config discovery walks up into the repo, still picking up the committed
+  mold-linker config. The config now lives outside the repo (developer-local
+  `~/.cargo/config.toml`) and the publish job defensively removes `.cargo/` before
+  publishing. v0.1.3 never reached crates.io.
+
 ## [0.1.3] - 2026-06-12
 
 ### Fixed

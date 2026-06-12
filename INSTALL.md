@@ -48,7 +48,7 @@ brew install --build-from-source ./Formula/llmtrim.rb
 ## With Cargo
 
 ```bash
-cargo install --git https://github.com/fkiene/llmtrim
+cargo install llmtrim
 ```
 
 ## From source
@@ -93,7 +93,7 @@ llmtrim update
 ```
 
 - **Binary** (`curl | sh`): re-runs the installer to fetch the latest release, then restarts.
-- **Cargo / Homebrew**: prints the right command (`cargo install --git … --force` /
+- **Cargo / Homebrew**: prints the right command (`cargo install llmtrim --force` /
   `brew upgrade llmtrim`), then run `llmtrim setup` to restart the daemon on it.
 
 `status` shows a one-line notice when a newer release exists (checked at most once a day,

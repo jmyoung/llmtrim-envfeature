@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml"><img src="https://github.com/fkiene/llmtrim/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL v3"></a>
+  <a href="https://crates.io/crates/llmtrim"><img src="https://img.shields.io/crates/v/llmtrim" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
 </p>
 
@@ -121,7 +122,7 @@ llmtrim status --watch
 irm https://raw.githubusercontent.com/fkiene/llmtrim/main/install.ps1 | iex
 ```
 
-Prefer to read what you run? `cargo install --git https://github.com/fkiene/llmtrim` or `brew install fkiene/tap/llmtrim` - same `setup`, no script. Prebuilt for x64 and ARM64; WSL uses the Linux line. Full options in [INSTALL.md](INSTALL.md).
+Prefer to read what you run? `cargo install llmtrim` or `brew install fkiene/tap/llmtrim` - same `setup`, no script. Prebuilt for x64 and ARM64; WSL uses the Linux line. Full options in [INSTALL.md](INSTALL.md).
 
 <p align="center">
   <picture>

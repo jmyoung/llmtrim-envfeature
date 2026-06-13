@@ -77,7 +77,19 @@ Swift emits `llmtrim_ffi.swift` + an FFI header and modulemap; Kotlin emits
 `uniffi/.../llmtrim_ffi.kt` (which loads the cdylib via JNA). CI compiles and runs a smoke
 for both — Swift on macOS (`swiftc` against the modulemap), Kotlin on a JVM (`kotlinc` +
 JNA) — so a binding break is caught in all four languages (see `tests/swift`, `tests/kotlin`
-and the `bindings*` jobs in `.github/workflows/ci.yml`). What remains is publishable
-packaging: a gem, a SwiftPM package / xcframework, and a Gradle/Maven artifact.
+and the `bindings*` jobs in `.github/workflows/ci.yml`).
+
+## Publishable packages
+
+Each ships the compiled engine bundled, so consumers need no Rust toolchain:
+
+| Target | Build | Package | Verified |
+|--------|-------|---------|----------|
+| Python (PyPI) | `scripts/build-wheel.sh` | wheel | locally |
+| Ruby (gem) | `scripts/build-gem.sh` | `packaging/ruby/` | locally |
+| Kotlin/JVM (Maven) | `scripts/build-maven.sh` | `packaging/kotlin/` | locally |
+| Swift (SwiftPM) | `scripts/build-xcframework.sh` | `packaging/swift/` | macOS CI only |
+
+Each `packaging/<lang>/README.md` has the usage + publish details.
 
 [`llmtrim-core`]: ../llmtrim-core

@@ -35,7 +35,9 @@ mkdir -p "$pkg_dir/Sources/Llmtrim"
 cp "$gen/llmtrim_ffi.swift" "$pkg_dir/Sources/Llmtrim/llmtrim_ffi.swift"
 
 echo "==> building static libs per Apple target"
-targets="aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios-sim"
+# Note: x86_64 iOS is only ever the simulator, so its target is `x86_64-apple-ios` (no
+# `-sim` suffix — that exists only for aarch64, to split arm64 device vs arm64 sim).
+targets="aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios"
 for t in $targets; do
     rustup target add "$t" >/dev/null 2>&1 || true
     cargo build --release -p llmtrim-uniffi --target "$t"
@@ -45,7 +47,7 @@ lib() { echo "target/$1/release/libllmtrim_ffi.a"; }
 mkdir -p "$work/macos" "$work/ios" "$work/iossim"
 lipo -create "$(lib aarch64-apple-darwin)" "$(lib x86_64-apple-darwin)" -output "$work/macos/libllmtrim_ffi.a"
 cp "$(lib aarch64-apple-ios)" "$work/ios/libllmtrim_ffi.a"
-lipo -create "$(lib aarch64-apple-ios-sim)" "$(lib x86_64-apple-ios-sim)" -output "$work/iossim/libllmtrim_ffi.a"
+lipo -create "$(lib aarch64-apple-ios-sim)" "$(lib x86_64-apple-ios)" -output "$work/iossim/libllmtrim_ffi.a"
 
 echo "==> assembling llmtrimFFI.xcframework"
 rm -rf "$pkg_dir/llmtrimFFI.xcframework"

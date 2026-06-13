@@ -269,8 +269,10 @@ pub fn compress_with_config(
 /// Reverse the lossless output transforms recorded in a rehydration plan. Internal: no
 /// output-side transform ships today (Stage D is input-only; DSS was removed), so this is an
 /// inert passthrough — a JSON response is normalized, plain text returned unchanged. Kept
-/// `pub` so the `llmtrim` CLI's interceptor can call it as its inverse hook; it is not
-/// otherwise part of the recommended embedding API.
+/// `pub` so the `llmtrim` CLI's interceptor (a separate crate) can call it as its inverse
+/// hook; `#[doc(hidden)]` keeps it off the embedding API — it is an inert passthrough today
+/// and embedders should not depend on it.
+#[doc(hidden)]
 pub fn rehydrate(response: &str, _plan: &str) -> Result<String> {
     match serde_json::from_str::<Value>(response) {
         Ok(value) => {

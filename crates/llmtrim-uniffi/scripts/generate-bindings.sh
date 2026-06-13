@@ -20,8 +20,15 @@ cd "$workspace_root"
 
 echo "==> building unstripped cdylib (for metadata)"
 cargo build -p llmtrim-uniffi
-lib="$workspace_root/target/debug/libllmtrim_ffi.so"
-[ -f "$lib" ] || lib="$(ls "$workspace_root"/target/debug/libllmtrim_ffi.* | head -1)"
+
+# Locate the cdylib for this platform (.so Linux / .dylib macOS / .dll Windows). Never the
+# .a staticlib — uniffi-bindgen dlopen()s the library and a static archive isn't loadable.
+lib=""
+for ext in so dylib dll; do
+    cand="$workspace_root/target/debug/libllmtrim_ffi.$ext"
+    [ -f "$cand" ] && { lib="$cand"; break; }
+done
+[ -n "$lib" ] || { echo "error: no libllmtrim_ffi.{so,dylib,dll} in target/debug/" >&2; exit 1; }
 
 for lang in python ruby swift kotlin; do
     echo "==> generating $lang -> $out_dir/$lang"

@@ -27,14 +27,20 @@ wheel="$(ls -t "$dist_dir"/llmtrim-*.whl | head -1)"
 echo "==> base wheel: $wheel"
 
 echo "==> generating UniFFI Python bindings"
-lib="$workspace_root/target/maturin/libllmtrim_ffi.so"
-[ -f "$lib" ] || lib="$(ls "$workspace_root"/target/*/libllmtrim_ffi.so | head -1)"
+# Locate the cdylib maturin built (.so Linux / .dylib macOS / .dll Windows); never the .a.
+lib=""
+for cand in "$workspace_root"/target/maturin/libllmtrim_ffi.{so,dylib,dll} \
+            "$workspace_root"/target/*/libllmtrim_ffi.{so,dylib,dll}; do
+    [ -f "$cand" ] && { lib="$cand"; break; }
+done
+[ -n "$lib" ] || { echo "error: could not locate the built libllmtrim_ffi cdylib" >&2; exit 1; }
 cargo run -q --bin uniffi-bindgen -p llmtrim-uniffi -- \
     generate --library "$lib" --language python --out-dir "$work_dir/glue"
 
 echo "==> injecting glue and repacking wheel"
 python3 -m wheel unpack "$wheel" -d "$work_dir/unpacked"
-pkg_dir="$(ls -d "$work_dir"/unpacked/*/llmtrim_ffi)"
+pkg_dir="$(ls -d "$work_dir"/unpacked/*/llmtrim_ffi 2>/dev/null | head -1 || true)"
+[ -n "$pkg_dir" ] || { echo "error: maturin wheel has no 'llmtrim_ffi' package dir — its layout changed; update this script" >&2; exit 1; }
 cp "$work_dir/glue/llmtrim_ffi.py" "$pkg_dir/__init__.py"
 python3 -m wheel pack "$(dirname "$pkg_dir")" -d "$dist_dir"
 

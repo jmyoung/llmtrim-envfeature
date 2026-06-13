@@ -6,13 +6,13 @@ pub mod hygiene;
 pub mod image;
 pub mod jsoncrush;
 pub mod ngram;
-pub mod ngram_sa;
+pub(crate) mod ngram_sa;
 pub mod output;
 pub mod retrieve;
 pub mod serialize;
-pub mod sizing;
+pub(crate) mod sizing;
 pub mod skeleton;
-pub mod tool_schema;
+pub(crate) mod tool_schema;
 pub mod toolout;
 pub mod tools;
 

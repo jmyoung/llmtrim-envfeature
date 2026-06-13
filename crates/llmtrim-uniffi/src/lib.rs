@@ -57,8 +57,10 @@ pub struct CompressOutput {
 #[derive(uniffi::Error, Debug)]
 pub enum LlmtrimError {
     /// The request body was not valid JSON, the provider could not be detected, or a
-    /// stage failed. The message carries the full context chain.
-    Compress { message: String },
+    /// stage failed. `detail` carries the full context chain. (Named `detail`, not
+    /// `message`, because UniFFI maps this onto a Kotlin exception whose `Throwable`
+    /// supertype already defines `message`.)
+    Compress { detail: String },
     /// `preset` named a workload that does not exist.
     UnknownPreset { name: String },
 }
@@ -66,7 +68,7 @@ pub enum LlmtrimError {
 impl std::fmt::Display for LlmtrimError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmtrimError::Compress { message } => write!(f, "{message}"),
+            LlmtrimError::Compress { detail } => write!(f, "{detail}"),
             LlmtrimError::UnknownPreset { name } => write!(f, "unknown preset: {name}"),
         }
     }
@@ -109,7 +111,7 @@ pub fn compress(
         None => llmtrim_core::compress(&input, kind),
     };
     result.map(project).map_err(|e| LlmtrimError::Compress {
-        message: format!("{e:#}"),
+        detail: format!("{e:#}"),
     })
 }
 

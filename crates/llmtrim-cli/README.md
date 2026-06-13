@@ -1,31 +1,52 @@
 # llmtrim
 
-Cut your LLM bill. `llmtrim` is a drop-in proxy that compresses LLM API requests in
-flight — input prompts, tool outputs, schemas — with static, deterministic algorithms and
-**zero extra model calls**, typically saving 30–90% of input tokens. It speaks the OpenAI,
-Anthropic and Google wire shapes and never changes the model's output behavior by default.
+<strong>llmtrim is a local proxy that compresses your LLM API requests so you pay less, with no change to the answers.</strong>
 
-```bash
-# install (or: brew install fkiene/tap/llmtrim · scoop install llmtrim · npm i -g @llmtrim/cli)
-cargo install llmtrim
+It sits between your AI tools and the provider, strips the wasted tokens out of every request, and forwards it on — same answers, smaller bill. **−31% input and −74% output tokens**, measured live across 112 A/B cases, with no change in answer quality.
 
-llmtrim setup          # configure the local interceptor + env
-llmtrim doctor         # verify the setup
+[![crates.io](https://img.shields.io/crates/v/llmtrim)](https://crates.io/crates/llmtrim)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-blue)](https://www.gnu.org/licenses/agpl-3.0.txt)
+
+```
+  before:  your tool ───── full request ─────▶  OpenAI / Anthropic / …
+                    ◀──────── reply ──────────
+
+  after:   your tool ──▶ llmtrim ──smaller──▶  OpenAI / Anthropic / …
+                            (on your machine)
+                    ◀──────── reply ──────────  (same answer)
 ```
 
-Point your app's HTTPS traffic through the local interceptor and requests are compressed
-before they reach the provider; the response comes back untouched. See the
-[project README](https://github.com/fkiene/llmtrim) for the full walkthrough, benchmarks,
-and configuration.
+A lot of what your tools send is waste: a 200-line build log where 2 lines are errors, a tool schema resent identically 50 times, a JSON array with 500 near-identical rows. llmtrim removes it before it's sent. Everything runs locally; nothing is ever sent to us.
 
-## Library / bindings
+> [!IMPORTANT]
+> **It can never make your bill bigger or break a request.** Every compression step is re-measured with the provider's real tokenizer; if a step doesn't save tokens, it's reverted. If the provider rejects the compressed request, the original is resent verbatim. Worst case is zero savings, never a worse outcome.
 
-This crate is the CLI and proxy. To embed the compression engine directly:
+## Install
 
-- Rust: [`llmtrim-core`](https://crates.io/crates/llmtrim-core) — the deterministic engine,
-  no network, no async.
-- Python / Ruby / Swift / Kotlin: the `llmtrim-uniffi` bindings in the
-  [repository](https://github.com/fkiene/llmtrim).
+```bash
+cargo install llmtrim   # or: cargo binstall llmtrim
+llmtrim setup           # configure the local interceptor + environment
+llmtrim doctor          # verify it
+```
+
+Other channels (same binary): `brew install fkiene/tap/llmtrim` · `scoop install llmtrim` · `npm i -g @llmtrim/cli` · `docker run ghcr.io/fkiene/llmtrim`. See [INSTALL.md](https://github.com/fkiene/llmtrim/blob/main/INSTALL.md).
+
+## Use it
+
+After `llmtrim setup`, any tool that honors `HTTPS_PROXY` routes through it automatically — Claude Code, Codex, Cursor, Aider, Gemini CLI, your own app. (GitHub Copilot pins its certificates and can't be intercepted.)
+
+Or run the compression directly, no proxy:
+
+```bash
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim compress --provider openai > out.json
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim send     --provider openai   # compress, call, print
+```
+
+**Zero config needed** — the default `auto` mode inspects each request and picks the right compressors for its shape (tool-heavy → `agent`, code → `code`, long context → `rag`, else `aggressive`). Force one with `LLMTRIM_PRESET=<name>`.
+
+## As a library
+
+The compression engine is the [`llmtrim-core`](https://crates.io/crates/llmtrim-core) crate (no network, no async), with native bindings for **Python, Ruby, Swift and Kotlin** — see the [project README](https://github.com/fkiene/llmtrim).
 
 ## License
 

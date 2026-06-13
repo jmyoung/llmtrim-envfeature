@@ -59,3 +59,7 @@ __pycache__/
 /crates/llmtrim-uniffi/packaging/ruby/lib/llmtrim/llmtrim_ffi.rb
 /crates/llmtrim-uniffi/packaging/ruby/lib/llmtrim/libllmtrim_ffi.*
 /crates/llmtrim-uniffi/packaging/**/*.gem
+/crates/llmtrim-uniffi/packaging/kotlin/src/main/kotlin/
+/crates/llmtrim-uniffi/packaging/kotlin/src/main/resources/
+/crates/llmtrim-uniffi/packaging/kotlin/build/
+/crates/llmtrim-uniffi/packaging/kotlin/.gradle/

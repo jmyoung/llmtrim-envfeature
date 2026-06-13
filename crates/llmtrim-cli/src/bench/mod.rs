@@ -733,14 +733,14 @@ fn is_transient_error(msg: &str) -> bool {
 /// the 1st's cached prefix and gets a cache discount even when the preset's `cache` stage is OFF,
 /// inflating cost/cache numbers by run ordering. A tiny leading marker shifts the cached prefix
 /// so neither arm hits the other's cache. Non-fatal: returns the input unchanged if it can't parse.
-fn cache_bust(request_json: &str, nonce: &str) -> String {
+fn cache_bust(request_json: &str, tag: &str) -> String {
     let Ok(mut v) = serde_json::from_str::<Value>(request_json) else {
         return request_json.to_string();
     };
     let Some(obj) = v.as_object_mut() else {
         return request_json.to_string();
     };
-    let marker = json!({"role": "system", "content": format!("[bench-nonce {nonce}]")});
+    let marker = json!({"role": "system", "content": format!("[bench-nonce {tag}]")});
     if let Some(Value::Array(msgs)) = obj.get_mut("messages") {
         msgs.insert(0, marker);
     } else if let Some(Value::Array(input)) = obj.get_mut("input") {

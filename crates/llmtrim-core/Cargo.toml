@@ -21,6 +21,11 @@ pre-release-replacements = [
   # $1 captures the previous release tag from the existing link — {{prev_version}} would
   # give the -dev version, producing a bogus compare URL.
   { file = "../../CHANGELOG.md", search = "\\[Unreleased\\]: https://github.com/fkiene/llmtrim/compare/(v[0-9.]+)\\.\\.\\.HEAD", replace = "[Unreleased]: https://github.com/fkiene/llmtrim/compare/v{{version}}...HEAD\n[{{version}}]: https://github.com/fkiene/llmtrim/compare/${1}...v{{version}}", exactly = 1 },
+  # Keep the README's versioned install snippets (Maven exact coordinate, SwiftPM `from:`)
+  # current — they'd otherwise pin a stale version after each release. `min = 0` so a
+  # README edit that drops them can't fail the release.
+  { file = "../../README.md", search = "io\\.github\\.fkiene:llmtrim:[0-9]+\\.[0-9]+\\.[0-9]+", replace = "io.github.fkiene:llmtrim:{{version}}", min = 0 },
+  { file = "../../README.md", search = "(fkiene/llmtrim\", from: \")[0-9]+\\.[0-9]+\\.[0-9]+", replace = "${1}{{version}}", min = 0 },
 ]
 
 [dependencies]

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-06-13
+
 ### Added
 - **Swift package.** llmtrim is now installable from Swift Package Manager via
   [`fkiene/llmtrim-swift`](https://github.com/fkiene/llmtrim-swift):
@@ -271,7 +273,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/fkiene/llmtrim/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/fkiene/llmtrim/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/fkiene/llmtrim/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/fkiene/llmtrim/compare/v0.1.5...v0.1.6

@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn real_workflow_description_drops_indented_js() {
-        let input = include_str!("../../tests/fixtures/tool_desc_workflow.txt");
+        let input = include_str!("../../fixtures/tool_desc_workflow.txt");
         let out = trunc(input, 300);
         assert!(
             out.starts_with(
@@ -1240,7 +1240,7 @@ mod tests {
 
     #[test]
     fn real_bash_description_drops_commit_boilerplate() {
-        let input = include_str!("../../tests/fixtures/tool_desc_bash.txt");
+        let input = include_str!("../../fixtures/tool_desc_bash.txt");
         let out = trunc(input, 300);
         assert!(
             out.starts_with("Executes a given bash command and returns its output."),
@@ -1258,7 +1258,7 @@ mod tests {
         // Continuation lines at the SAME indentation as their bullets
         // (column 0) must stay inside the item unit: boilerplate payload
         // elides while behavioral constraints survive.
-        let input = include_str!("../../tests/fixtures/tool_desc_bash_compact.txt");
+        let input = include_str!("../../fixtures/tool_desc_bash_compact.txt");
         let out = trunc(input, 300);
         assert!(
             out.starts_with("Executes a bash command and returns its output."),

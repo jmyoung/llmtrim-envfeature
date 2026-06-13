@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::ir::ProviderKind;
+use llmtrim_core::ir::ProviderKind;
 
 /// Hard ceiling on any single upstream round-trip. ureq has no default timeout, so a hung
 /// upstream would pin a blocking thread forever (and on the replay path, leak the daemon's

@@ -6,9 +6,9 @@
 //!
 //! Run `cargo test --test quality -- --nocapture` to see the curve.
 
-use llmtrim::config::DenseConfig;
-use llmtrim::ir::ProviderKind;
 use llmtrim::quality::{RecallCase, mean_recall, run_recall};
+use llmtrim_core::config::DenseConfig;
+use llmtrim_core::ir::ProviderKind;
 
 mod common;
 use common::{input_only, user_chat};

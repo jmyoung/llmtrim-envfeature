@@ -14,11 +14,11 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use crate::compress_with_config;
-use crate::config::DenseConfig;
-use crate::ir::ProviderKind;
-use crate::provider::{self, Provider};
 use crate::transport::Endpoint;
+use llmtrim_core::compress_with_config;
+use llmtrim_core::config::DenseConfig;
+use llmtrim_core::ir::ProviderKind;
+use llmtrim_core::provider::{self, Provider};
 
 /// A case asserting that answer-bearing phrases survive compression.
 pub struct RecallCase {
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn provider_answer_text_extraction() {
-        use crate::provider::for_kind;
+        use llmtrim_core::provider::for_kind;
         use serde_json::json;
         let oa = for_kind(ProviderKind::OpenAi);
         assert_eq!(

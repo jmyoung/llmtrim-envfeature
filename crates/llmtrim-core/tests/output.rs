@@ -15,9 +15,11 @@
 //!
 //! Run `cargo test --test output -- --nocapture` to see the overhead report.
 
-use llmtrim::config::DenseConfig;
-use llmtrim::ir::ProviderKind;
-use llmtrim::stages::output::{COMPACT_CODE_INSTRUCTION, DRAFT_INSTRUCTION, TERSE_INSTRUCTION};
+use llmtrim_core::config::DenseConfig;
+use llmtrim_core::ir::ProviderKind;
+use llmtrim_core::stages::output::{
+    COMPACT_CODE_INSTRUCTION, DRAFT_INSTRUCTION, TERSE_INSTRUCTION,
+};
 use serde_json::Value;
 
 mod common;
@@ -35,7 +37,7 @@ fn output_on() -> DenseConfig {
 }
 
 fn request_json(body: &str, provider: ProviderKind, cfg: &DenseConfig) -> String {
-    llmtrim::compress_with_config(body, Some(provider), cfg)
+    llmtrim_core::compress_with_config(body, Some(provider), cfg)
         .expect("compress failed")
         .request_json
 }
@@ -95,11 +97,14 @@ fn cap(request_json: &str) -> Option<u64> {
 /// a large output cut, but the instruction itself must not bloat the prompt).
 #[test]
 fn output_instruction_input_overhead_is_small() {
-    let off =
-        llmtrim::compress_with_config(PROSE, Some(ProviderKind::OpenAi), &DenseConfig::default())
-            .unwrap();
-    let on =
-        llmtrim::compress_with_config(PROSE, Some(ProviderKind::OpenAi), &output_on()).unwrap();
+    let off = llmtrim_core::compress_with_config(
+        PROSE,
+        Some(ProviderKind::OpenAi),
+        &DenseConfig::default(),
+    )
+    .unwrap();
+    let on = llmtrim_core::compress_with_config(PROSE, Some(ProviderKind::OpenAi), &output_on())
+        .unwrap();
     let overhead = on.input_tokens_after.0 as i64 - off.input_tokens_after.0 as i64;
 
     println!("\nllmtrim output-side eval (terse instruction input cost):");

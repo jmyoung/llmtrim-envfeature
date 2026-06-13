@@ -22,11 +22,11 @@ use statrs::statistics::Statistics;
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
-use crate::compress_with_config;
-use crate::config::DenseConfig;
-use crate::ir::ProviderKind;
 use crate::quality::Model;
-use crate::tokenizer::TokenCounter;
+use llmtrim_core::compress_with_config;
+use llmtrim_core::config::DenseConfig;
+use llmtrim_core::ir::ProviderKind;
+use llmtrim_core::tokenizer::TokenCounter;
 
 /// How a case's answer is graded against its gold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1199,7 +1199,7 @@ mod tests {
 
     #[test]
     fn run_ab_computes_outcomes_and_frontier() {
-        use crate::tokenizer::counter_for;
+        use llmtrim_core::tokenizer::counter_for;
         use serde_json::json;
         let counter = counter_for(ProviderKind::OpenAi, Some("gpt-4o")).unwrap();
         let cfg = DenseConfig::default();
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[test]
     fn compressed_4xx_is_scored_zero_not_dropped() {
-        use crate::tokenizer::counter_for;
+        use llmtrim_core::tokenizer::counter_for;
         let counter = counter_for(ProviderKind::OpenAi, Some("gpt-4o")).unwrap();
         let model = FailCompModel {
             ok_answer: "The answer is 42.".into(),
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[test]
     fn compressed_transient_error_is_skipped() {
-        use crate::tokenizer::counter_for;
+        use llmtrim_core::tokenizer::counter_for;
         let counter = counter_for(ProviderKind::OpenAi, Some("gpt-4o")).unwrap();
         let model = FailCompModel {
             ok_answer: "The answer is 42.".into(),

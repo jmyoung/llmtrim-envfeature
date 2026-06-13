@@ -28,24 +28,24 @@ fn main() {
     };
     let kind = args
         .get(1)
-        .map(|p| llmtrim::ir::ProviderKind::from_str(p).expect("unknown provider"));
-    let config = llmtrim::config::DenseConfig::auto();
+        .map(|p| llmtrim_core::ir::ProviderKind::from_str(p).expect("unknown provider"));
+    let config = llmtrim_core::config::DenseConfig::auto();
 
     // Warm: tokenizer vocab + lazy regexes (daemon pays this once, not per request).
     for _ in 0..5 {
-        let _ = llmtrim::compress_with_config(&input, kind, &config).unwrap();
+        let _ = llmtrim_core::compress_with_config(&input, kind, &config).unwrap();
     }
 
     let n = 100;
     let t = Instant::now();
     let mut last = None;
     for _ in 0..n {
-        last = Some(llmtrim::compress_with_config(&input, kind, &config).unwrap());
+        last = Some(llmtrim_core::compress_with_config(&input, kind, &config).unwrap());
     }
     let per_req_ms = t.elapsed().as_secs_f64() * 1000.0 / f64::from(n);
     let r = last.unwrap();
 
-    let counter = llmtrim::tokenizer::counter_for(r.provider, r.model.as_deref()).unwrap();
+    let counter = llmtrim_core::tokenizer::counter_for(r.provider, r.model.as_deref()).unwrap();
     let value: serde_json::Value = serde_json::from_str(&input).unwrap();
     let tools_str = value
         .get("tools")

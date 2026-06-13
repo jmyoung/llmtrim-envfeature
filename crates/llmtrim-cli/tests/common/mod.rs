@@ -8,7 +8,7 @@
 //! idiom).
 #![allow(dead_code)]
 
-use llmtrim::config::DenseConfig;
+use llmtrim_core::config::DenseConfig;
 use serde_json::{Value, json};
 
 /// Input-side config: the terse output-shaping instruction is off so input savings

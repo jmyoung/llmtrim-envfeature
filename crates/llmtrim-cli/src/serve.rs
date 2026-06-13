@@ -46,10 +46,10 @@ mod imp {
     use hudsucker::rustls::crypto::aws_lc_rs;
     use hudsucker::{Body, HttpContext, HttpHandler, Proxy, RequestOrResponse};
 
-    use crate::config::DenseConfig;
-    use crate::ir::ProviderKind;
-    use crate::memo::Memo;
     use crate::tracking::{Record, Tracker};
+    use llmtrim_core::config::DenseConfig;
+    use llmtrim_core::ir::ProviderKind;
+    use llmtrim_core::memo::Memo;
 
     /// The exact endpoint hosts of every provider in the `llm_providers` registry — the
     /// maintained upstream source of truth. The CA is name-constrained to these (plus their
@@ -335,15 +335,15 @@ mod imp {
             let _ = ledger.send(record_from(p.clone(), ResponseUsage::default()));
             return original;
         };
-        let answer = crate::provider::for_kind(p.provider).answer_text(&json);
+        let answer = llmtrim_core::provider::for_kind(p.provider).answer_text(&json);
         // The model billed the shorthand it emitted — count that for spend.
         let out_tok = answer.as_ref().and_then(|a| {
-            crate::tokenizer::counter_for(p.provider, p.model.as_deref())
+            llmtrim_core::tokenizer::counter_for(p.provider, p.model.as_deref())
                 .ok()
                 .map(|c| c.count(a) as i64)
         });
         if let Some(answer) = answer
-            && let Ok(expanded) = crate::rehydrate(&answer, &p.plan)
+            && let Ok(expanded) = llmtrim_core::rehydrate(&answer, &p.plan)
         {
             set_answer(&mut json, p.provider, &expanded);
         }
@@ -390,7 +390,7 @@ mod imp {
         /// a stale CA — one generated before a host was added — blind-tunnels the new host rather
         /// than forging a cert its own name-constraints reject. Degrade safely, never break.
         domains: Arc<std::collections::HashSet<String>>,
-        /// Turn-stability memo (see [`crate::memo`]), shared across the per-request handler
+        /// Turn-stability memo (see [`llmtrim_core::memo`]), shared across the per-request handler
         /// clones so a conversation's earlier-turn compressed prefix is reusable on its next
         /// turn — keeping the provider prefix cache warm on agent loops. In-memory only.
         memo: Arc<Memo>,
@@ -619,10 +619,10 @@ mod imp {
         // same domain) is then adapted by what the body actually is, not the host guess.
         let kind = serde_json::from_str::<serde_json::Value>(text)
             .ok()
-            .and_then(|v| crate::provider::detect(&v))
+            .and_then(|v| llmtrim_core::provider::detect(&v))
             .unwrap_or(provider);
         let started = std::time::Instant::now();
-        let mut result = crate::compress_with_config(text, Some(kind), config).ok()?;
+        let mut result = llmtrim_core::compress_with_config(text, Some(kind), config).ok()?;
         // Never forward a request larger than we received. On tiny or non-chat bodies (e.g.
         // token-count / auxiliary calls) the input-side stages can't offset the output-control
         // instruction's fixed cost, so the compressed form is a net token *increase*. Forward
@@ -723,7 +723,7 @@ mod imp {
         memo: &Memo,
         kind: ProviderKind,
         original_body: &str,
-        result: &mut crate::CompressResult,
+        result: &mut llmtrim_core::CompressResult,
     ) {
         if !config.memo {
             return;
@@ -759,7 +759,7 @@ mod imp {
             "{kind:?}|{lineup}|{}",
             serde_json::to_string(config).unwrap_or_default()
         );
-        let reused = crate::memo::apply(memo, salt.as_bytes(), &original, &mut compressed);
+        let reused = llmtrim_core::memo::apply(memo, salt.as_bytes(), &original, &mut compressed);
         if reused == 0 {
             // Either nothing matched (cold prefix) or an unmodelled shape: `compressed` is
             // unchanged from `result.request_json`, so leave the result (and its counts) as-is.
@@ -771,11 +771,12 @@ mod imp {
         let Ok(rewritten) = serde_json::to_string(&compressed) else {
             return;
         };
-        if let Ok(counter) = crate::tokenizer::counter_for(kind, result.model.as_deref()) {
-            let adapter = crate::provider::for_kind(kind);
-            let req = crate::ir::Request::from_value(kind, compressed);
-            let after = crate::pipeline::content_tokens(&req, adapter.as_ref(), counter.as_ref());
-            result.input_tokens_after = crate::tokenizer::Tokens(after);
+        if let Ok(counter) = llmtrim_core::tokenizer::counter_for(kind, result.model.as_deref()) {
+            let adapter = llmtrim_core::provider::for_kind(kind);
+            let req = llmtrim_core::ir::Request::from_value(kind, compressed);
+            let after =
+                llmtrim_core::pipeline::content_tokens(&req, adapter.as_ref(), counter.as_ref());
+            result.input_tokens_after = llmtrim_core::tokenizer::Tokens(after);
         }
         result.request_json = rewritten;
     }
@@ -803,7 +804,7 @@ mod imp {
             // present in the response.
             let output_after = extract_output_usage(p.provider, &buf).or_else(|| {
                 extract_output_text(p.provider, &buf).and_then(|text| {
-                    crate::tokenizer::counter_for(p.provider, p.model.as_deref())
+                    llmtrim_core::tokenizer::counter_for(p.provider, p.model.as_deref())
                         .ok()
                         .map(|c| c.count(&text) as i64)
                 })
@@ -833,7 +834,7 @@ mod imp {
         if text.trim_start().starts_with('{')
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim())
         {
-            return crate::provider::for_kind(provider).answer_text(&value);
+            return llmtrim_core::provider::for_kind(provider).answer_text(&value);
         }
         let mut out = String::new();
         for line in text.lines() {
@@ -1116,19 +1117,19 @@ mod imp {
     /// Build the lazy tokenizer BPE tables (the dominant one-time cost) + prime the stage code
     /// paths and the first tree-sitter grammar, before the proxy starts serving.
     fn warm_up(config: &DenseConfig) {
-        use crate::ir::ProviderKind;
+        use llmtrim_core::ir::ProviderKind;
         for (kind, model) in [
             (ProviderKind::OpenAi, Some("gpt-4o")), // o200k_base
             (ProviderKind::OpenAi, Some("gpt-4")),  // cl100k_base
             (ProviderKind::Anthropic, None),        // approximate counter
         ] {
-            if let Ok(c) = crate::tokenizer::counter_for(kind, model) {
+            if let Ok(c) = llmtrim_core::tokenizer::counter_for(kind, model) {
                 let _ = c.count("warm up the tokenizer table");
             }
         }
         // One real compression primes the stage code paths + the first grammar load.
         let sample = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"function f(){ return 1; }"}]}"#;
-        let _ = crate::compress_with_config(sample, Some(ProviderKind::OpenAi), config);
+        let _ = llmtrim_core::compress_with_config(sample, Some(ProviderKind::OpenAi), config);
     }
 
     async fn run_async(port: u16) -> Result<()> {
@@ -1169,7 +1170,7 @@ mod imp {
             // live CA can sign for.
             domains: Arc::new(covered_domains()),
             // One process-wide turn-stability memo, shared across the per-request handler clones.
-            memo: Arc::new(Memo::with_capacity(crate::memo::DEFAULT_CAPACITY)),
+            memo: Arc::new(Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY)),
             pending: None,
         };
 
@@ -1515,7 +1516,7 @@ mod imp {
                 "messages": [{"role": "user", "content": "hi"}],
             });
             assert_eq!(
-                crate::provider::detect(&claude_body),
+                llmtrim_core::provider::detect(&claude_body),
                 Some(ProviderKind::Anthropic)
             );
         }
@@ -1640,22 +1641,22 @@ mod imp {
 
         #[test]
         fn compress_blocking_rejects_non_json() {
-            use crate::config::DenseConfig;
-            use crate::ir::ProviderKind;
+            use llmtrim_core::config::DenseConfig;
+            use llmtrim_core::ir::ProviderKind;
             let cfg = DenseConfig::default();
-            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
+            let memo = Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY);
             assert!(compress_blocking(&cfg, b"not json", ProviderKind::OpenAi, &memo).is_none());
             assert!(compress_blocking(&cfg, b"", ProviderKind::OpenAi, &memo).is_none());
         }
 
         #[test]
         fn compress_blocking_net_win_guard() {
-            use crate::config::DenseConfig;
-            use crate::ir::ProviderKind;
+            use llmtrim_core::config::DenseConfig;
+            use llmtrim_core::ir::ProviderKind;
             // A tiny request: compression overhead exceeds savings → gate fires → None.
             let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
             let cfg = DenseConfig::default();
-            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
+            let memo = Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY);
             // May return None (net loss) or Some (net win); both are valid.
             // The important assertion: when Some, the compressed form must have fewer input tokens.
             if let Some((compressed, pending)) =
@@ -1673,8 +1674,8 @@ mod imp {
 
         #[test]
         fn compress_blocking_compresses_repetitive_content() {
-            use crate::config::DenseConfig;
-            use crate::ir::ProviderKind;
+            use llmtrim_core::config::DenseConfig;
+            use llmtrim_core::ir::ProviderKind;
             // 50 identical log lines: dedup should fire and compression should win.
             let lines = "ERROR database connection pool exhausted, retrying in 5s\n".repeat(50);
             let body = serde_json::json!({
@@ -1683,7 +1684,7 @@ mod imp {
             })
             .to_string();
             let cfg = DenseConfig::default();
-            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
+            let memo = Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY);
             // Dedup is default-on and the spam is contiguous: this must compress, so a
             // `None` here is a regression (the test must not pass vacuously).
             let (compressed, pending) =
@@ -1721,8 +1722,8 @@ mod imp {
 
         #[test]
         fn compress_blocking_actual_compression_with_large_body() {
-            use crate::config::DenseConfig;
-            use crate::ir::ProviderKind;
+            use llmtrim_core::config::DenseConfig;
+            use llmtrim_core::ir::ProviderKind;
             // A substantive system prompt + user turn — large enough that Stage A (truncation)
             // and Stage B (dedup) can fire and the net-win guard lets the result through.
             let system = "You are a senior software engineer reviewing pull requests. \
@@ -1742,7 +1743,7 @@ mod imp {
             })
             .to_string();
             let cfg = DenseConfig::default();
-            let memo = Memo::with_capacity(crate::memo::DEFAULT_CAPACITY);
+            let memo = Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY);
             if let Some((compressed_json, pending)) =
                 compress_blocking(&cfg, body.as_bytes(), ProviderKind::OpenAi, &memo)
             {
@@ -1781,10 +1782,10 @@ mod imp {
         ) {
             let (tx, rx) = std::sync::mpsc::channel();
             let handler = Interceptor {
-                config: Arc::new(crate::config::DenseConfig::default()),
+                config: Arc::new(llmtrim_core::config::DenseConfig::default()),
                 ledger: tx,
                 domains: Arc::new(intercept_domains().into_iter().collect()),
-                memo: Arc::new(Memo::with_capacity(crate::memo::DEFAULT_CAPACITY)),
+                memo: Arc::new(Memo::with_capacity(llmtrim_core::memo::DEFAULT_CAPACITY)),
                 pending: None,
             };
             (handler, rx)

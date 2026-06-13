@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Split into a Cargo workspace: `llmtrim-core` (engine) + `llmtrim` (CLI/proxy).**
+  The deterministic compression engine — `compress`/`compress_with_config`/`route`/
+  `rehydrate`/`CompressResult` plus the pipeline, stage, provider, tokenizer, gate and
+  config modules — now lives in a standalone `llmtrim-core` crate with no async/tokio
+  in its dependency tree, so it can be embedded as a library. The `llmtrim` binary,
+  MITM interceptor, daemon, token ledger, live benchmark and terminal UI move to the
+  `llmtrim` CLI crate, which depends on `llmtrim-core`. No behavior change; the `llmtrim`
+  command and its install paths are unchanged. `rehydrate` is now `pub` (the CLI's
+  interceptor calls it across the crate boundary).
+
 ## [0.1.6] - 2026-06-12
 
 ### Added

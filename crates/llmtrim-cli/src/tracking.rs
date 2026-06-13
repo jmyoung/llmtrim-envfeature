@@ -311,7 +311,7 @@ impl Tracker {
     /// configured age retention (`LLMTRIM_RETENTION_DAYS` env or `retention_days` in the
     /// config file; `None` = age retention disabled, row cap only).
     pub fn prune_default(&self) -> Result<u64> {
-        self.prune(DEFAULT_MAX_ROWS, crate::config::retention_days())
+        self.prune(DEFAULT_MAX_ROWS, llmtrim_core::config::retention_days())
     }
 
     pub fn record(&self, r: &Record) -> Result<()> {

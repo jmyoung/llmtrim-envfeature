@@ -12,12 +12,12 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use llmtrim::bench::{self, BenchCase};
-use llmtrim::config::DenseConfig;
-use llmtrim::ir::ProviderKind;
 use llmtrim::monitor;
 use llmtrim::tracking::{Period, Record, Tracker};
 use llmtrim::transport::Endpoint;
 use llmtrim::ui::{self, Tone};
+use llmtrim_core::config::DenseConfig;
+use llmtrim_core::ir::ProviderKind;
 
 /// Coloured `--help` in the dashboard's accent family. clap gates these on
 /// TTY/NO_COLOR itself via anstream, so piped help stays plain.
@@ -311,7 +311,7 @@ fn run() -> Result<()> {
                 .as_deref()
                 .map(ProviderKind::from_str)
                 .transpose()?;
-            let result = llmtrim::compress(&input, kind)?;
+            let result = llmtrim_core::compress(&input, kind)?;
 
             // Record to the savings ledger (best-effort: a ledger failure must never
             // block the user's compressed output).
@@ -346,17 +346,17 @@ fn run() -> Result<()> {
                 .as_deref()
                 .map(ProviderKind::from_str)
                 .transpose()?;
-            let result = llmtrim::compress(&input, kind)?;
+            let result = llmtrim_core::compress(&input, kind)?;
             let endpoint = Endpoint::from_env(result.provider)?;
             let response = endpoint.send(&result.request_json)?;
 
             // Record to the savings ledger (best-effort: never block the user's output).
             if let Ok(counter) =
-                llmtrim::tokenizer::counter_for(result.provider, result.model.as_deref())
+                llmtrim_core::tokenizer::counter_for(result.provider, result.model.as_deref())
             {
                 let output_after = serde_json::from_str::<serde_json::Value>(&response)
                     .ok()
-                    .and_then(|v| llmtrim::provider::for_kind(result.provider).answer_text(&v))
+                    .and_then(|v| llmtrim_core::provider::for_kind(result.provider).answer_text(&v))
                     .map(|text| counter.count(&text) as i64);
                 if let Ok(tracker) = Tracker::open() {
                     let _ = tracker.record(&Record {
@@ -556,7 +556,7 @@ fn run() -> Result<()> {
             let cases = llmtrim::quality::load_corpus(&jsonl, kind)?;
             // Clamp the user-supplied keep ratio to its valid [0,1] domain at the boundary.
             let keep_ratio = keep_ratio.clamp(0.0, 1.0);
-            let config = llmtrim::config::DenseConfig {
+            let config = llmtrim_core::config::DenseConfig {
                 retrieve: true,
                 retrieve_keep_ratio: keep_ratio,
                 retrieve_min_segment_chars: 120,
@@ -752,7 +752,7 @@ fn run_offline(
 ) -> Result<()> {
     let (mut before, mut after) = (0usize, 0usize);
     for c in cases {
-        let r = llmtrim::compress_with_config(&c.request, Some(kind), config)?;
+        let r = llmtrim_core::compress_with_config(&c.request, Some(kind), config)?;
         before += r.input_tokens_before.0;
         after += r.input_tokens_after.0;
     }
@@ -813,7 +813,7 @@ fn run_live(
         .map(|s| bench::load_pricing(&s))
         .unwrap_or_default();
     let price = bench::resolve_pricing(&table, &args.model);
-    let counter = llmtrim::tokenizer::counter_for(kind, Some(&args.model))?;
+    let counter = llmtrim_core::tokenizer::counter_for(kind, Some(&args.model))?;
     let api_key = dotenv_get("OPENROUTER_API_KEY")
         .context("OPENROUTER_API_KEY not set (in env or a local .env)")?;
     let llm = llmtrim::quality::OpenRouterModel::new(api_key, kind)?;

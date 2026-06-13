@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn real_compaction_prompt_is_not_log() {
-        let t = include_str!("../../../tests/fixtures/compaction_prompt.txt");
+        let t = include_str!("../../../fixtures/compaction_prompt.txt");
         assert_eq!(detect(t), None);
     }
 

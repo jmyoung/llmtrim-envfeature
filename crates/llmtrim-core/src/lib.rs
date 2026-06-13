@@ -4,36 +4,24 @@
 //! body, compresses it with deterministic algorithms only (no auxiliary model, no
 //! embeddings), and can reverse the lossless transforms on the response. The
 //! functions here are the **pure transform core** — no network calls live in this
-//! crate. The CLI (`main.rs`), and later a proxy/library surface, wrap them.
+//! crate. The `llmtrim` CLI/proxy crate wraps them.
 //!
 
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-pub mod autostart;
-pub mod bench;
 pub mod cache_zone;
 pub mod config;
-pub mod daemon;
-pub mod doctor;
 pub mod gate;
 pub mod ir;
 pub mod media;
 pub mod memo;
-pub mod monitor;
 pub mod pipeline;
 pub mod provider;
-pub mod quality;
 pub mod quality_gate;
 pub mod select;
-pub mod serve;
-pub mod setup;
 pub mod stages;
 pub mod tokenizer;
-pub mod tracking;
-pub mod transport;
-pub mod ui;
-pub mod update;
 
 use gate::{PlanEntry, Transform};
 use ir::{ProviderKind, Request};
@@ -281,11 +269,9 @@ pub fn compress_with_config(
 /// Reverse the lossless output transforms recorded in a rehydration plan. Internal: no
 /// output-side transform ships today (Stage D is input-only; DSS was removed), so this is an
 /// inert passthrough — a JSON response is normalized, plain text returned unchanged. Kept
-/// `pub(crate)` as the interceptor's inverse hook; not part of the public API.
-// Only the `intercept` transport calls this; allow it to be unused in the tokio-free
-// embedder build (`--no-default-features`) without tripping `-D warnings`.
-#[cfg_attr(not(feature = "intercept"), allow(dead_code))]
-pub(crate) fn rehydrate(response: &str, _plan: &str) -> Result<String> {
+/// `pub` so the `llmtrim` CLI's interceptor can call it as its inverse hook; it is not
+/// otherwise part of the recommended embedding API.
+pub fn rehydrate(response: &str, _plan: &str) -> Result<String> {
     match serde_json::from_str::<Value>(response) {
         Ok(value) => {
             serde_json::to_string(&value).context("failed to serialize rehydrated response")

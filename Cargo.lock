@@ -1994,7 +1994,6 @@ dependencies = [
  "async-trait",
  "auto-launch",
  "base64",
- "bm25",
  "bytes",
  "chrono",
  "clap",
@@ -2002,11 +2001,10 @@ dependencies = [
  "csv",
  "ctrlc",
  "dotenvy",
- "gaoya",
  "http-body-util",
  "hudsucker",
- "image",
  "llm_providers",
+ "llmtrim-core",
  "once_cell",
  "owo-colors",
  "regex",
@@ -2015,10 +2013,32 @@ dependencies = [
  "serde",
  "serde_json",
  "statrs",
- "stop-words 0.10.0",
  "tiktoken-rs 0.12.0",
  "time",
  "tokio",
+ "toml",
+ "unicode-width 0.2.0",
+ "ureq",
+ "wait-timeout",
+ "winreg",
+]
+
+[[package]]
+name = "llmtrim-core"
+version = "0.1.7-dev"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bm25",
+ "csv",
+ "gaoya",
+ "image",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "stop-words 0.10.0",
+ "tiktoken-rs 0.12.0",
  "toml",
  "toon-format",
  "tree-sitter",
@@ -2038,11 +2058,7 @@ dependencies = [
  "tree-sitter-zig",
  "unicode-normalization",
  "unicode-segmentation",
- "unicode-width 0.2.0",
- "ureq",
- "wait-timeout",
  "whatlang",
- "winreg",
 ]
 
 [[package]]

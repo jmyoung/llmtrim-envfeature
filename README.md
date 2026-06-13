@@ -5,7 +5,12 @@
 <h1 align="center">llmtrim</h1>
 
 <p align="center">
-  <strong>Cut ~66% off your LLM bill: input, output, and cache, with zero extra model calls.</strong>
+  <strong>llmtrim is a local proxy that compresses your LLM API requests so you pay less, with no change to the answers.</strong><br>
+  It sits between your AI tools and the provider, strips the wasted tokens out of every request, and forwards it on. You get the same answers for a smaller bill.
+</p>
+
+<p align="center">
+  <sub><b>−31% input and −74% output tokens</b>, measured live across 112 A/B cases, with no change in answer quality.</sub>
 </p>
 
 <p align="center">
@@ -16,233 +21,192 @@
 </p>
 
 <p align="center">
-  <a href="#-the-numbers">Numbers</a> &bull;
-  <a href="#-what-compression-looks-like">Before / after</a> &bull;
-  <a href="#-get-started-60-seconds">Get started</a> &bull;
-  <a href="#-works-with">Works with</a> &bull;
-  <a href="#-compared-to">Compared to</a> &bull;
-  <a href="#-benchmark">Benchmark</a> &bull;
-  <a href="#-security">Security</a> &bull;
-  <a href="https://github.com/fkiene/llmtrim/issues">Issues</a>
+  <a href="#what-it-actually-does">What it does</a> &bull;
+  <a href="#see-it-on-real-output">See it in action</a> &bull;
+  <a href="#get-started">Get started</a> &bull;
+  <a href="#use-it-without-the-proxy">CLI &amp; library</a> &bull;
+  <a href="#works-with">Works with</a> &bull;
+  <a href="#configuration">Configuration</a> &bull;
+  <a href="#the-numbers">Numbers</a>
 </p>
 
 ---
 
-A drop-in HTTPS proxy that compresses every LLM request and reply. Works with any provider, with no model in the loop. Quality holds, A/B-checked live on every benchmark case.
+## What it actually does
 
-A request bleeds tokens in three places. llmtrim fixes all three:
+You run Claude Code, Codex, Cursor, or your own app. Every time it talks to an LLM, it sends a big blob of text: your system prompt, the tool definitions, the whole conversation history, and the raw output of every command it ran. You pay for every one of those tokens, on every single turn.
 
-- **Input**: system prompt, tool schemas, history. Resent every turn.
-- **Output**: the model's reply. The expensive half.
-- **Cache**: the invariant prefix. Re-billed in full when busted.
+**A lot of that text is waste.** A 200-line build log where only 2 lines are errors. A tool schema resent identically 50 times. A JSON array with 500 near-identical rows. The model doesn't need the bulk of it to answer well, but you're billed for all of it.
 
-Every cut passes the **token gate**: a check that re-counts the result with the provider's real tokenizer and reverts any stage that doesn't save.
+**llmtrim removes the waste before it's sent.** It installs as a local proxy that sits between your tool and the LLM provider. Requests pass through it, get compressed, and continue to the provider. The reply comes back unchanged. Your tool doesn't know it's there; you just get a smaller bill.
 
-> **The guarantee:** no net token win → auto-revert. Upstream rejects the request → the original is replayed verbatim. Worst case is zero savings - never a bigger bill, never a broken call.
+```
+  before:  your tool ───── full request ─────▶  OpenAI / Anthropic / …
+                    ◀──────── reply ──────────
 
-## 💸 The numbers
+  after:   your tool ──▶ llmtrim ──smaller──▶  OpenAI / Anthropic / …
+                            (on your machine)
+                    ◀──────── reply ──────────  (same answer)
+```
 
-Measured live, not estimated. Every one of the 112 A/B cases is sent twice (original and compressed), then answered, scored, and billed at real rates.
+> [!IMPORTANT]
+> **It can never make your bill bigger or break a request.** Every compression step is re-measured with the provider's real tokenizer; if a step doesn't actually save tokens, it's reverted. If the provider rejects the compressed request, the original is resent verbatim. Worst case is zero savings, never a worse outcome.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="bench/frontier-light.svg">
-    <img src="bench/frontier-dark.svg" alt="llmtrim cuts the LLM round-trip bill both ends: original $0.0365 vs llmtrim $0.0126, −66% cost (output −74%, input −31%) across 112 live A/B cases" width="840">
-  </picture>
-</p>
+Everything runs locally. Nothing is ever sent to us.
 
-- **Quality holds.** Answers scored 78.9% original vs 82.2% compressed. The +3.3pp delta sits within the per-corpus confidence intervals (±5–15pp at these sample sizes), so read it as *no degradation*, not a bonus - per-corpus CIs in [bench/README.md](bench/README.md).
-- **The token cuts travel; the price tag varies.** The cuts are model-independent: −31% input, −74% output. The cost saving depends on the model's output:input price ratio - −66% on the benchmark model (`qwen/qwen3-next-80b-a3b-instruct`, ≈12:1 ratio), projected −57–59% at GPT-4o / Claude Sonnet rates, less on reasoning models whose hidden thinking tokens can't be cut from the prompt side.
-- **Your prompt cache survives.** On live Claude Code traffic, llmtrim cuts **−68% of compressible input** without ever touching the cached prefix. Your ~90% prompt-cache discount stays intact; `llmtrim status` shows yours.
+## See it on real output
 
-<details>
-<summary><b>Exact numbers (112 live A/B cases)</b></summary>
+Here's one real thing llmtrim does, end to end. An AI agent ran a build, and the `bash` tool returned a 58-line log. Only two lines matter (the errors), but all 58 get sent to the model and billed.
 
-| | original | compressed | saved |
-|---|--:|--:|--:|
-| input tokens | 71,031 | 49,062 | **−31%** |
-| output tokens | 25,843 | 6,628 | **−74%** |
-| total tokens | 96,874 | 55,690 | **−43%** |
-| **round-trip cost** | **$0.0365** | **$0.0126** | **−66%** |
-| **answer quality** | 78.9% | 82.2% | Δ within CI (no measured degradation) |
-
-[Methodology + per-corpus frontier →](bench/README.md)
-
-</details>
-
-## 🔍 What compression looks like
-
-Each stage fires only where it pays, and only if the token gate nets a win:
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="pipeline-light.svg">
-    <img src="pipeline-dark.svg" alt="One agent request through llmtrim's five biggest levers: tool-output folding, lexical retrieval, cache discipline, TOON serialization, and output control - all ten stages take it from 11,240 to 3,914 input tokens, −65%" width="880">
-  </picture>
-</p>
-
-<details>
-<summary><b>Full before / after: one tool result</b></summary>
-
-A real run of `llmtrim compress` on a whole Anthropic `messages` request (5,210 chars in, 1,506 out). Two stages fired: cache discipline added a `cache_control` marker to the tool block so it stays cached across calls, and tool-output compression - shown below, where the bulk of the saving came from - folded a cargo build log the `bash` tool returned: 58 lines, 4,662 chars, two ERROR lines buried in 56 INFO lines.
-
-**Before** - the `tool_result` content as the model would have received it (abridged for this page; the actual input is the full 58 lines / 4,662 chars):
+**Before**, what the model would receive (58 lines, 4,662 chars):
 
 ```text
 [2026-06-13T10:02:00Z] INFO  compiling module core::worker::task_0 (incremental)
 [2026-06-13T10:02:01Z] INFO  compiling module core::worker::task_1 (incremental)
 [2026-06-13T10:02:02Z] INFO  compiling module core::worker::task_2 (incremental)
-[2026-06-13T10:02:03Z] INFO  compiling module core::worker::task_3 (incremental)
-[2026-06-13T10:02:04Z] INFO  compiling module core::worker::task_4 (incremental)
-[2026-06-13T10:02:05Z] INFO  compiling module core::worker::task_5 (incremental)
-... 24 more INFO lines ...
+... 27 more near-identical INFO lines ...
 [2026-06-13T10:02:31Z] ERROR src/worker/pool.rs:214: mismatched types: expected `usize`, found `i64`
-... 24 more INFO lines ...
-[2026-06-13T10:02:36Z] INFO  compiling module core::net::conn_24 (incremental)
+... 25 more INFO lines ...
 [2026-06-13T10:03:01Z] ERROR src/net/conn.rs:88: cannot borrow `buf` as mutable more than once
 [2026-06-13T10:03:02Z] INFO  build failed, 2 errors
 ```
 
-**After** - the same `tool_result` as llmtrim sends it, in full (5 lines, 978 chars):
+**After**, what llmtrim sends instead (5 lines, 978 chars, **−79%**):
 
 ```text
-[{}] INFO compiling module core::worker::task_{} (incremental) [×30: (2026-06-13T10:02:00Z..2026-06-13T10:02:29Z step 1s; 0..29)]
+[{}] INFO compiling module core::worker::task_{} (incremental) [×30: (10:02:00Z..10:02:29Z step 1s; 0..29)]
 [2026-06-13T10:02:31Z] ERROR src/worker/pool.rs:214: mismatched types: expected `usize`, found `i64`
-[{}] INFO compiling module core::net::conn_{} (incremental) [×25: (2026-06-13T10:02:32Z,2026-06-13T10:02:33Z,2026-06-13T10:02:34Z,2026-06-13T10:02:35Z,2026-06-13T10:02:36Z,2026-06-13T10:02:37Z,2026-06-13T10:02:38Z,2026-06-13T10:02:39Z,2026-06-13T10:02:40Z,2026-06-13T10:02:41Z,2026-06-13T10:02:42Z,2026-06-13T10:02:43Z,2026-06-13T10:02:44Z,2026-06-13T10:02:45Z,2026-06-13T10:02:46Z,2026-06-13T10:02:47Z,2026-06-13T10:02:48Z,2026-06-13T10:02:49Z,2026-06-13T10:02:50Z,2026-06-13T10:02:51Z,2026-06-13T10:02:32Z,2026-06-13T10:02:33Z,2026-06-13T10:02:34Z,2026-06-13T10:02:35Z,2026-06-13T10:02:36Z; 0..24)]
+[{}] INFO compiling module core::net::conn_{} (incremental) [×25: 10:02:32Z..10:02:56Z; 0..24]
 [2026-06-13T10:03:01Z] ERROR src/net/conn.rs:88: cannot borrow `buf` as mutable more than once
 [2026-06-13T10:03:02Z] INFO  build failed, 2 errors
 ```
 
-Both ERROR lines and the summary survive verbatim. The 55 repetitive INFO lines are folded into a template plus their parameter columns - regular sequences collapse to a lossless range (`00Z..29Z step 1s; 0..29`), and when a column is irregular (the second block's timestamps wrap) it stays an explicit list rather than risk a lossy guess. The other stages fire on shapes this small request doesn't have (long prose, big JSON, code, images); the table below shows what each does. Reproduce on your own data with one command: `llmtrim compress --provider anthropic < request.json`.
+Both errors and the summary survive **verbatim**. The repetitive INFO lines fold into a template plus their values, losslessly, because the range is regular (`task_0..task_29`). The model still sees exactly what happened; it just costs a fifth as much.
 
-</details>
-
-<details>
-<summary><b>Full stage reference</b></summary>
-
-Stages run in savings order: `tool-output > retrieve > cache > output > json-sample > serialization > skeleton > dedup > micro-text`. Nothing under a `cache_control` marker is ever rewritten.
-
-| Stage | Lever | What it does | When it runs |
-|---|---|---|---|
-| **T** tool-output | toolout | lossless template fold first (consecutive runs *and* interleaved parallel-build lines), then window logs · diffs · grep · repetitive dumps to the signal: errors, changes, matches | auto · tool results |
-| **A** cache discipline | cache | mark + stabilize the invariant prefix (sort tools/schema · OpenAI `prompt_cache_key`) so it stays cached across calls | auto · tools |
-| **B** lexical retrieval | retrieve | BM25+ ranking with RM3 feedback (TextRank when query-less) · TextTiling cuts prose at topic shifts · budgeted submodular selection keeps the relevant *non-redundant* chunks; question protected | auto · long context |
-| **C** skeletonization | skeleton | tree-sitter keeps the bodies of the query-relevant functions, drops the rest to signatures - 14 languages | auto · code |
-| **D** serialize + hygiene | serialization | minify JSON, encode record arrays to [TOON](https://crates.io/crates/toon-format) (a compact table encoding for JSON arrays) or CSV, Unicode-normalize | always · lossless |
-| **D₊** json sample | json_crush | down-sample huge record arrays: keep first/last + outliers (errors, rare values) + a query-biased *diverse* sample | auto · big JSON |
-| **E** dedup | dedup | collapse duplicate + near-duplicate lines (prose only; data untouched) | always · exact |
-| **F** output control | output | terse instruction · Chain-of-Draft · token budget · native JSON schema | auto |
-| **G** tool layer | tool | static tool selection + description trimming (schemas resent each call) | auto · tools |
-| **H** multimodal | multimodal | downscale images to the provider's resolution cap | auto · images |
-
-Default `auto` switches each stage on only where it pays. `safe` runs the lossless stages only. [Full config →](#-configuration)
-
-</details>
-
-## ⚡ Get started (60 seconds)
-
-> **Is this safe?** Everything runs locally - nothing is ever sent to us. llmtrim sees your LLM traffic only; every other connection passes through untouched. `setup` changes three things (a certificate in `~/.llmtrim/`, a proxy block in your shell profile, a background service) and `llmtrim uninstall` removes all three. Anything that can't be compressed safely is sent through unmodified. Full threat model: [SECURITY.md](SECURITY.md).
+Try it yourself on any request body:
 
 ```bash
-# 1 - Install (any OS, prebuilt binary, no Rust needed)
-npm install -g @llmtrim/cli && llmtrim setup
-
-# 2 - Open a new shell. Your tools now route through llmtrim.
-
-# 3 - Watch the bill shrink
-llmtrim status --watch
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim compress --provider openai
 ```
 
-No Node? Same result with the installers: `curl -fsSL https://raw.githubusercontent.com/fkiene/llmtrim/main/install.sh | sh` (Linux/macOS) or `irm https://raw.githubusercontent.com/fkiene/llmtrim/main/install.ps1 | iex` (Windows PowerShell).
+Log-folding is just one of ten compressors. A different one re-encodes bulky JSON arrays into a compact table, with the same data in a third of the tokens:
 
-Prefer your own package manager? `brew install fkiene/tap/llmtrim`, `cargo binstall llmtrim`, `scoop install llmtrim` (after `scoop bucket add llmtrim https://github.com/fkiene/scoop-bucket`), or `docker run ghcr.io/fkiene/llmtrim` - same binary everywhere. Prebuilt for x64 and ARM64; WSL uses the Linux line. Full options in [INSTALL.md](INSTALL.md).
+```text
+before:  [{"id":1,"city":"Paris","ok":true},{"id":2,"city":"Lyon","ok":false}, … 200 rows]
+after:   [200]{id,city,ok}: 1,Paris,true; 2,Lyon,false; …          (TOON encoding, lossless)
+```
+
+Each compressor fires only where it pays:
+
+| Where the waste is | What llmtrim does |
+|---|---|
+| **Tool output** (build logs, diffs, grep dumps, big JSON) | Keep the signal (errors, changes, matches), fold the noise |
+| **Long context** (pasted docs, history) | Rank and keep the chunks relevant to the question; drop the rest |
+| **Source code** | Keep the bodies of relevant functions, reduce the rest to signatures |
+| **Tool schemas** (resent every turn) | Trim descriptions, drop unused tools, keep the cache prefix stable |
+| **JSON / record arrays** | Re-encode to a compact table format, sample huge arrays |
+| **The model's reply** | Ask for terser output where it won't hurt the answer |
+
+<details>
+<summary><b>Full stage reference (all 10 compressors)</b></summary>
+
+Stages run in savings order. Nothing under a `cache_control` marker is ever rewritten.
+
+| Stage | What it does | When it runs |
+|---|---|---|
+| **tool-output** | Lossless template fold first, then window logs · diffs · grep · dumps down to errors / changes / matches | tool results |
+| **cache discipline** | Mark + stabilize the invariant prefix (sort tools/schema · OpenAI `prompt_cache_key`) so it stays cached | tools |
+| **lexical retrieval** | BM25+ ranking with RM3 feedback · TextTiling topic cuts · budgeted non-redundant selection; question protected | long context |
+| **skeletonization** | tree-sitter keeps relevant function bodies, drops the rest to signatures (14 languages) | code |
+| **serialize + hygiene** | Minify JSON, encode record arrays to [TOON](https://crates.io/crates/toon-format) or CSV, Unicode-normalize | always · lossless |
+| **json sample** | Down-sample huge record arrays: first/last + outliers + a query-biased diverse sample | big JSON |
+| **dedup** | Collapse duplicate + near-duplicate lines (prose only) | always |
+| **output control** | Terse instruction · Chain-of-Draft · token budget · native JSON schema | auto |
+| **tool layer** | Static tool selection + description trimming | tools |
+| **multimodal** | Downscale images to the provider's resolution cap | images |
+
+Default `auto` switches each stage on only where it pays. `safe` runs the lossless stages only. [Full config →](#configuration)
+
+</details>
+
+## Get started
+
+> [!NOTE]
+> Works with any tool that routes through `HTTPS_PROXY`: Claude Code, Codex, Cursor, Aider, your own app. GitHub Copilot pins its certificates and can't be intercepted ([full list](#works-with)).
+
+```bash
+# 1. Install (any OS, prebuilt binary, no Rust needed)
+npm install -g @llmtrim/cli && llmtrim setup
+
+# 2. Open a new shell. Your AI tools now route through llmtrim automatically.
+
+# 3. Watch the savings add up as you work
+llmtrim status --watch
+```
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="status-watch-light.svg">
-    <img src="status-watch-dark.svg" alt="llmtrim status --watch: live dashboard showing tokens trimmed, dollars off your real bill, input/output savings bars, and per-model breakdown, refreshing in real time" width="760">
+    <img src="status-watch-dark.svg" alt="llmtrim status --watch: a live dashboard showing tokens trimmed, dollars saved off your real bill, input/output savings bars, and a per-model breakdown" width="760">
   </picture>
 </p>
 
-### How it works
-
-llmtrim is a local HTTPS proxy: it decrypts, compresses, and re-encrypts your LLM traffic on your own machine - the same technique as mitmproxy, scoped to LLM APIs. `setup` creates a private certificate that lets llmtrim read *this one kind of traffic*: it is technically restricted to LLM domains and cannot read your bank, email, or anything else. It also wires `HTTPS_PROXY`/`NODE_EXTRA_CA_CERTS` into your shell profile and starts the daemon at login. No IDE settings are touched.
-
-Don't take the README's word for the "LLM domains only" part - check it yourself:
+**No Node?** Use an installer instead:
 
 ```bash
-llmtrim ca   # prints the certificate path, then:
-openssl x509 -in ~/.llmtrim/ca.pem -noout -text | grep -A3 "Name Constraints"
-# the domains listed there are the only ones it can ever intercept
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/fkiene/llmtrim/main/install.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/fkiene/llmtrim/main/install.ps1 | iex
 ```
 
-```
-  without llmtrim:                              with llmtrim:
+Or your own package manager, same binary everywhere: `brew install fkiene/tap/llmtrim` · `cargo binstall llmtrim` · `scoop install llmtrim` · `docker run ghcr.io/fkiene/llmtrim`. Full options in [INSTALL.md](INSTALL.md).
 
-  tool ──request──▶ LLM API                     tool ──request──▶ llmtrim ──compressed──▶ LLM API
-   ▲                  │                           ▲                  │  (gate · stream)      │
-   └──── response ────┘                           └──── response ────┴── pass-through ───────┘
-        full bill                                          −66% bill, answer unchanged
-```
+### Is this safe to install?
 
-There's no API key to manage - it forwards your tool's own auth. The CA is name-constrained to LLM domains, and only a metadata-only counts ledger touches disk ([Security →](#-security)).
-
-```bash
-llmtrim status      # health + savings: ● running · ✓ port ✓ env ✓ ca · $ saved · by-model
-llmtrim doctor      # something off? end-to-end diagnosis; each failing check names its fix
-llmtrim uninstall   # exact inverse of setup: daemon, profile block, CA, binary - all reversed
-```
-
-If the daemon ever stops, your tools fail fast with a connection error rather than silently bypassing compression. `llmtrim doctor` names the problem; `llmtrim start` fixes it.
+`setup` is a local HTTPS proxy, the same technique as [mitmproxy](https://mitmproxy.org), scoped to LLM APIs. It changes exactly three things (a CA certificate in `~/.llmtrim/`, a proxy setting in your shell profile, a login service), and `llmtrim uninstall` reverses all three. No API keys are stored (it forwards your tool's own auth), and your prompts never touch disk; only an anonymous count of tokens saved is kept. Full threat model: [SECURITY.md](SECURITY.md).
 
 <details>
-<summary><b>More proxy commands</b></summary>
+<summary><b>What gets installed, and how to verify the cert is harmless</b></summary>
 
-```bash
-llmtrim start            # start the interceptor in the background (setup does this)
-llmtrim serve            # or foreground (Ctrl-C to stop)
-llmtrim stop             # stop the daemon
-llmtrim update           # update to the latest release + restart the daemon (channel-aware)
-llmtrim autostart        # run at login (--off to disable)
-llmtrim ca               # print the CA path + how to trust it system-wide (for GUI apps)
-llmtrim status --daily   # time-series report (--weekly/--monthly); --json/--csv to export
-```
+1. **A private certificate** in `~/.llmtrim/`, cryptographically constrained to LLM API domains. It *cannot* read your bank, email, or any other traffic, even if the key were stolen. Check that yourself:
+   ```bash
+   llmtrim ca   # prints the cert path
+   openssl x509 -in ~/.llmtrim/ca.pem -noout -text | grep -A3 "Name Constraints"
+   # those domains are the only ones it can ever touch
+   ```
+2. **A proxy setting** in your shell profile (`HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS`).
+3. **A background service** that starts at login.
 
-`status` doubles as a health check. It verifies the whole chain (daemon → port → env → CA → traffic) and exits 0 healthy / 1 stopped / 2 degraded. `status -q` prints just `healthy|degraded|stopped` for scripts; the JSON export carries the same under `daemon.health`.
-
-Default `auto` routes each request to its shape's preset, with breakers that keep it safe on live traffic:
-
-- `cache` skips a client managing its own `cache_control` (no 400s)
-- `retrieve` protects directive blocks
-- `tool_select` never drops an already-invoked tool
-
-On agent traffic, tool-description trimming is the big lever - clients resend long tool schemas on every call.
+If the service stops, your tools fail fast with a connection error rather than silently bypassing it.
 
 </details>
 
-## 🔌 Works with
+<details>
+<summary><b>Day-to-day commands</b></summary>
 
-Any tool that honors `HTTPS_PROXY` and an env-provided CA - which is every CLI agent and most Node apps:
+```bash
+llmtrim status      # health + savings dashboard (aliases: monitor, gain)
+llmtrim doctor      # something off? end-to-end diagnosis; each check names its fix
+llmtrim start       # start the background proxy
+llmtrim stop        # stop it
+llmtrim serve       # run in the foreground instead (Ctrl-C to quit)
+llmtrim update      # update to the latest release + restart
+llmtrim uninstall   # exact inverse of setup: removes all three changes
+```
 
-| Tool | Works | Notes |
-|---|:---:|---|
-| Claude Code | ✅ | −68% of compressible input on live traffic, cache discount intact |
-| Codex CLI | ✅ | |
-| Gemini CLI | ✅ | |
-| Cursor / VS Code extensions | ✅ | Node-based: picks up `NODE_EXTRA_CA_CERTS` |
-| Aider, OpenCode, any HTTPS_PROXY-aware CLI | ✅ | |
-| Your own app / SDK | ✅ | or call the [library / one-shot CLI](#-one-shot--library) directly |
-| GitHub Copilot | ❌ | certificate pinning - can't be intercepted |
+`llmtrim status --daily` (or `--weekly` / `--monthly`) gives a time-series report; add `--json` or `--csv` to export.
 
-Providers come from the [`llm_providers`](https://crates.io/crates/llm_providers) registry (OpenAI, Anthropic, Google, DeepSeek, Mistral, xAI, Moonshot, Zhipu, Qwen, MiniMax, Cerebras, OpenRouter, …) and update with the crate. Every non-LLM connection is blind-tunneled untouched.
+</details>
 
-## 🛠️ One-shot & library
+## Use it without the proxy
 
-Use the same compression without the proxy - from the CLI or as a Rust library:
+The same compression is available as a one-shot CLI or a Rust library, with no proxy and no setup.
 
 ```bash
 echo '{"model":"gpt-4o","messages":[...]}' | llmtrim compress --provider openai > out.json
-echo '{"model":"gpt-4o","messages":[...]}' | llmtrim send --provider openai   # compress + call + print
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim send     --provider openai   # compress, call, print
 ```
 
 ```rust
@@ -250,211 +214,149 @@ use llmtrim::{compress, compress_with_config};
 use llmtrim::config::DenseConfig;
 use llmtrim::ir::ProviderKind;
 
-let result = compress(request_json, Some(ProviderKind::OpenAi))?;   // env/file config, auto-detect with None
+// Pass None to auto-detect the provider from the request.
+let result = compress(request_json, Some(ProviderKind::OpenAi))?;
 println!("{} -> {} input tokens", result.input_tokens_before, result.input_tokens_after);
 
+// Or with explicit settings:
 let result = compress_with_config(request_json, Some(ProviderKind::OpenAi), &DenseConfig::default())?;
 ```
 
-## 🤝 Compared to
+The compression core is `tokio`-free; add `default-features = false` if you don't need the proxy.
 
-Three neighbors solve parts of the same problem - good company to be in. [RTK](https://github.com/rtk-ai/rtk) pioneered CLI-output filtering, [caveman](https://github.com/JuliusBrussee/caveman) the terse-output skill, and [Headroom](https://github.com/chopratejas/headroom) is the closest peer on the input side. Each compresses one layer; llmtrim does the whole round-trip.
+## Works with
+
+Any tool that honors `HTTPS_PROXY` and an env-provided CA, which is essentially every CLI agent and most Node apps:
+
+| Tool | Works | Notes |
+|---|:---:|---|
+| Claude Code | ✅ | Prompt-cache discount stays intact |
+| Codex CLI | ✅ | |
+| Gemini CLI | ✅ | |
+| Cursor / VS Code extensions | ✅ | Node-based: picks up `NODE_EXTRA_CA_CERTS` |
+| Aider, OpenCode, any `HTTPS_PROXY`-aware CLI | ✅ | |
+| Your own app / SDK | ✅ | or call the [CLI / library](#use-it-without-the-proxy) directly |
+| GitHub Copilot | ❌ | certificate pinning blocks interception |
+
+Providers come from the [`llm_providers`](https://crates.io/crates/llm_providers) registry (OpenAI, Anthropic, Google, DeepSeek, Mistral, xAI, Moonshot, Zhipu, Qwen, OpenRouter, …) and update with it. Every non-LLM connection passes through untouched.
+
+## Configuration
+
+**Zero config needed.** The default (`auto`) inspects each request and picks the right compressors for its shape: tool-heavy → `agent`, code → `code`, long context with a question → `rag`, otherwise → `aggressive`.
+
+If you want to force a mode, set one line: `LLMTRIM_PRESET=<name>` or `preset = "<name>"` in `$XDG_CONFIG_HOME/llmtrim/config.toml`:
+
+| preset | for |
+| --- | --- |
+| **`auto`** *(default)* | routes each request to the right compressors automatically; right for almost everyone |
+| **`safe`** | lossless only: byte-faithful round-trip, no lossy stages |
+| `reasoning` | math / step-by-step workloads |
+| `cache` | a fixed prefix reused across many calls |
+
+<details>
+<summary><b>Per-flag overrides (power users)</b></summary>
+
+Every stage is individually tunable via config flags; `preset` wins over individual flags. The full table is long; see the field list in [`src/config.rs`](src/config.rs) or run `llmtrim compress --help`. The most useful knobs:
+
+| field | default | meaning |
+| --- | --- | --- |
+| `toolout` | on in `agent`/`aggressive` | tool-output compression (logs / diffs / grep / dumps) |
+| `retrieve` | `false` | lexical retrieval for long context (lossy) |
+| `skeletonize` | `false` | drop non-relevant function bodies to signatures |
+| `serialize` | `true` | TOON / CSV encoding of record arrays |
+| `json_crush` | on in `agent`/`aggressive` | sample huge record arrays |
+| `output_control` | `false` | terse-output instruction + cap |
+| `cache` | `false` | `cache_control` breakpoints (lossless) |
+| `dedup` | `true` | collapse duplicate lines (lossless) |
+| `quality_gate` | `true` | revert any lossy cut whose query-relevant coverage drops too far |
+
+Env: `LLMTRIM_PRESET` (preset), `LLMTRIM_CONFIG` (config-file path), `LLMTRIM_DB_PATH` (ledger location).
+
+</details>
+
+## The numbers
+
+The savings are measured live, not estimated. Each of 112 benchmark cases is sent **twice** (once original, once compressed), then both answers are scored and billed at real rates, so the saving and the answer quality are measured together.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="bench/frontier-light.svg">
+    <img src="bench/frontier-dark.svg" alt="llmtrim cuts the round-trip bill on both ends: $0.0365 original vs $0.0126 compressed, −66% cost, across 112 live A/B cases" width="840">
+  </picture>
+</p>
+
+| | original | compressed | saved |
+|---|--:|--:|--:|
+| input tokens | 71,031 | 49,062 | **−31%** |
+| output tokens | 25,843 | 6,628 | **−74%** |
+| **round-trip cost** | **$0.0365** | **$0.0126** | **−66%** |
+| answer quality | 78.9% | 82.2% | no measured degradation |
+
+The token cuts are model-independent (−31% input, −74% output); the dollar saving depends on the model's output-to-input price ratio: −66% on the benchmark model, projected −57–59% at GPT-4o / Claude Sonnet rates. On live Claude Code traffic, llmtrim cuts **−68% of compressible input** without ever touching the cached prefix, so your prompt-cache discount stays intact.
+
+Full methodology, per-corpus frontier, and confidence intervals are in [bench/README.md](bench/README.md). Reproduce it:
+
+```bash
+python3 bench/scripts/download.py 40   # pull real corpora (gsm8k, humaneval, dolly, hotpotqa, …)
+bash    bench/scripts/run_all.sh       # live A/B (needs OPENROUTER_API_KEY)
+python3 bench/scripts/chart.py         # regenerate the chart + table
+```
+
+<details>
+<summary><b>How does it compare to RTK / Headroom / caveman?</b></summary>
+
+Three neighbors each compress one layer of the problem; llmtrim does the whole round-trip and is quality-gated so it can't increase your bill.
 
 | | **llmtrim** | Headroom | RTK | caveman |
 |---|:---:|:---:|:---:|:---:|
 | Whole round-trip (input · output · cache) | ✅ | input only | CLI only | output only |
-| **Can't increase your bill** (auto-revert gate) | ✅ | ❌ | ✅ | ❌ |
-| **Live A/B**: savings *and* answer quality | ✅ | offline evals | ❌ | tokens only |
+| Can't increase your bill (auto-revert) | ✅ | ❌ | ✅ | ❌ |
+| Live A/B: savings *and* quality | ✅ | offline | ❌ | tokens only |
 | Install: one static binary | ✅ | Python + GB models | ✅ | ✅ |
-| **Overhead it adds / request** | **<10 ms** | 52 ms median\* | <10 ms | n/a |
-| Prompt overhead it injects | **19 tokens** | n/a | n/a | 949 tokens (always-on skill) |
-| Deterministic: same request → same result | ✅ | ❌ | ✅ | ✅ |
+| Overhead added / request | **<10 ms** | 52 ms median | <10 ms | n/a |
+| Prompt overhead injected | **19 tokens** | n/a | n/a | 949 tokens |
 
-<sub>\* Headroom's own production telemetry (161 ms mean, 4.2 s P99) - sources in the feature comparison below.</sub>
-
-**They stack.** llmtrim removes another 35% from Claude Code's resent tool schemas *on top of* RTK. On agentic tool output it saves **93–98%**, with the bill measured both ways.
-
-<details>
-<summary><b>vs Caveman</b></summary>
-
-Measured on caveman's own 10 benchmark prompts, same model (`gpt-oss-20b`), real API token counts ([bench/results-caveman](bench/results-caveman/README.md)):
-
-| | llmtrim | caveman |
-|---|---|---|
-| Output reduction | −69% | **−80%** (deeper) |
-| Instruction cost | **19 tokens** (`prompts/output_terse.txt`) | 949 tokens (always-on skill, o200k) |
-| Net tokens saved / request | ~728 | ~698 |
-| Quality on 9 prompts | 1 truncation (2048 cap) | 1 hard fail (empty completion) + 1 thinned answer |
-| Beyond output | input + cache + tool schemas | output only |
-
-The caveman persona cuts deeper, but its skill costs 50× the instruction tokens and carried the only hard failure. Net per request the two land within a few percent of each other - llmtrim gets there without the persona risk, quality-gated, and also compresses the input and cache sides caveman doesn't touch. Both arms reproducible: `bench/scripts/caveman_ab.py`.
+They also **stack**: llmtrim removes another ~35% from Claude Code's resent tool schemas on top of RTK. Detailed head-to-heads with [RTK](https://github.com/rtk-ai/rtk), [Headroom](https://github.com/chopratejas/headroom), and [caveman](https://github.com/JuliusBrussee/caveman) are in [bench/README.md](bench/README.md).
 
 </details>
 
+## Known limits
+
+These are surfaced by the same A/B that proves the savings:
+
+- **Anthropic / Gemini token counts are approximate.** There's no public exact tokenizer, so a BPE proxy is used and flagged in `status`. OpenAI is exact.
+- **Output savings aren't measured live.** The proxy compresses input; an output *saving* needs the A/B counterfactual, which only the offline benchmark runs. `status` "saved" is input-side.
+- **The default is quality-gated, not lossless.** Lossy stages run only where the eval shows quality holds. Want a byte-faithful round-trip? Use the `safe` preset.
+
+## Acknowledgments
+
+Every compressor is a deterministic implementation of published research: the ideas are theirs, the engineering and the token gate are ours.
+
 <details>
-<summary><b>vs Headroom</b></summary>
+<summary><b>Papers + crates behind each stage</b></summary>
 
-The trade is **pure-Rust simplicity + cache-correctness** vs **ML reach**:
+**Retrieval & context:** BM25 (Robertson & Zaragoza 2009, [`bm25`](https://crates.io/crates/bm25)); BM25+ (Lv & Zhai, CIKM 2011); RM3 (Lavrenko & Croft, SIGIR 2001); TextTiling (Hearst, CL 1997); TextRank (Mihalcea & Tarau, EMNLP 2004); MMR (Carbonell & Goldstein, SIGIR 1998); Submodular selection (Lin & Bilmes, ACL 2011, [arXiv:2008.05391](https://arxiv.org/abs/2008.05391)); DPP diverse sampling (Chen et al., NeurIPS 2018); Lost in the Middle ([arXiv:2307.03172](https://arxiv.org/abs/2307.03172)); DSLR ([arXiv:2407.03627](https://arxiv.org/abs/2407.03627)).
 
-| | llmtrim | Headroom |
-|---|---|---|
-| Runtime | single 47 MB static binary, 0 deps | Python + numpy / onnxruntime / transformers / magika / fastembed (100s MB – GB) |
-| Latency it adds | **<10 ms per request**, measured here: 0.5 ms at 5 KB, 7 ms at 49k tokens. ~110 ms one-time startup. The smaller prompt often makes the call *faster* overall | **52 ms median / 161 ms mean**, P99 4.2 s - self-reported production telemetry\* |
-| Models | none (deterministic) | ONNX detection (magika) + learned text compressor (Kompress) + embeddings |
-| Tool output | log / diff / grep + repetitive fallback, adaptive↔aggressive auto-split | SmartCrusher / log / diff / search (ML-assisted) |
-| Cache discipline | never rewrites the `cache_control` prefix + tool/schema sort + OpenAI `prompt_cache_key` | live-zone byte-range surgery + cache stabilization |
-| Output side | terse / Chain-of-Draft / token-budget shaping | input-side only |
+**Code:** RepoCoder ([arXiv:2303.12570](https://arxiv.org/abs/2303.12570)); Hierarchical Context Pruning ([arXiv:2406.18294](https://arxiv.org/abs/2406.18294)); The Hidden Cost of Readability ([arXiv:2508.13666](https://arxiv.org/abs/2508.13666)); Minification token accounting ([arXiv:2606.01326](https://arxiv.org/abs/2606.01326)).
 
-**Where Headroom leads** (honest): ML content detection, semantic relevance, a learned text compressor, cross-agent memory, an MCP server, more providers (Bedrock / Vertex). Savings are in the same league (llmtrim 93–98%; Headroom ~92%).
+**Tool output:** Drain (He et al., ICWS 2017); Brain (Yu et al., IEEE TSC 2023); LogLSHD ([arXiv:2504.02172](https://arxiv.org/abs/2504.02172)).
 
-<sub>\* llmtrim's latencies are measured here (`cargo bench --bench latency`). Headroom's numbers are self-reported on its [benchmarks page](https://headroom-docs.vercel.app/docs/benchmarks).</sub>
+**Dedup & abbreviation:** SimHash (Charikar, STOC 2002, [`gaoya`](https://crates.io/crates/gaoya)); CompactPrompt ([arXiv:2510.18043](https://arxiv.org/abs/2510.18043)); Maximal repeats ([arXiv:1304.0528](https://arxiv.org/abs/1304.0528)) + Re-Pair (Larsson & Moffat, DCC 1999).
+
+**Output control:** Chain-of-Draft ([arXiv:2502.18600](https://arxiv.org/abs/2502.18600)); TALE ([arXiv:2412.18547](https://arxiv.org/abs/2412.18547)).
+
+**Serialization:** [TOON](https://crates.io/crates/toon-format) (Token-Oriented Object Notation), Johann Schopplich.
+
+Built on [`tiktoken-rs`](https://crates.io/crates/tiktoken-rs), [`tree-sitter`](https://crates.io/crates/tree-sitter), [`image`](https://crates.io/crates/image), [`whatlang`](https://crates.io/crates/whatlang), [`hudsucker`](https://crates.io/crates/hudsucker), [`rusqlite`](https://crates.io/crates/rusqlite), and more.
 
 </details>
 
-## 🔬 Benchmark
+## Found a problem?
 
-The benchmark measures two things per request, both live:
+Run `llmtrim doctor` for an end-to-end diagnosis; each failing check names its fix. Found a request it mangled? Set `LLMTRIM_CAPTURE_DIR` and [open an issue](https://github.com/fkiene/llmtrim/issues) with the before/after capture, since a repro is a fix. And if it saved you money, a ⭐ helps others find it.
 
-- **tokens saved**: real tokenizer, at compress time
-- **quality retained**: A/B delta between the answer on the *original* vs the *compressed* request
+---
 
-A preset only counts if quality holds at its saving, so the (saved, retained) frontier is the benchmark, not the saving alone. It also shows where compression pays (output-heavy generation, chat, reasoning) and where it can't (cache workloads, short extractive RAG). Full per-corpus frontier + CIs in [bench/README.md](bench/README.md).
-
-Scoring uses ground truth where possible: numeric-exact (math), pass@1 running the unit tests (code), token-F1 (QA), tool-call match (agents), LLM judge (open-ended).
-
-```bash
-python3 bench/scripts/download.py 40   # pull + hash real corpora (gsm8k, humaneval, dolly, hotpotqa, glaive, ultrachat, cnn)
-bash    bench/scripts/run_all.sh       # live A/B (needs OPENROUTER_API_KEY; builds --features live)
-python3 bench/scripts/chart.py         # regenerate the chart + table
-```
-
-## 📊 Configuration
-
-**Zero config needed.** Default `auto` routes every request by its shape: tools → `agent`, code → `code`, long-context + question → `rag`, else → `aggressive`. To force a preset, set one line - `preset = "<name>"` in the config TOML (`$LLMTRIM_CONFIG` or `$XDG_CONFIG_HOME/llmtrim/config.toml`) or `LLMTRIM_PRESET=<name>`.
-
-| preset | for |
-| --- | --- |
-| **`auto`** *(default)* | routes each request to the proven preset for its shape - right for almost everyone |
-| **`safe`** | lossless only - byte-faithful round-trip (lossy stages off) |
-
-Known workload? Name a preset: `reasoning` (math / step-by-step) or `cache` (a fixed prefix reused across calls). Naming one yourself rarely beats `auto`. Power users can hand-tune raw flags (`preset` wins over flags).
-
-<details>
-<summary><strong>Advanced - per-flag overrides (alternative to a preset)</strong></summary>
-
-| field | default | meaning |
-| --- | --- | --- |
-| `hygiene` | `true` | Stage D minify (+ base64 strip if enabled) |
-| `normalize_unicode` | `false` | NFKC fold + strip invisible/format waste (lossy; in `aggressive`) |
-| `serialize` | `true` | Stage D TOON encoding |
-| `serialize_nested` | `true` | also encode arrays nested in content JSON |
-| `serialize_min_rows` | `2` | min array rows before encoding |
-| `serialize_csv` | `false` | encode flat arrays as both TOON and CSV, keep the smaller |
-| `serialize_flatten` | `false` → on in `agent`/`aggressive` | flatten nested-uniform records to dotted columns (`meta.region`) |
-| `serialize_buckets` | `false` → on in `agent`/`aggressive` | partition heterogeneous record arrays into per-shape TOON tables |
-| `json_crush` / `json_crush_max_rows` | `false` / `50` → on in `agent`/`aggressive` | sample record arrays longer than the cap (keep first/last + outliers + a query-biased sample); lossy |
-| `strip_base64` | `false` → on in `auto` | elide base64/data-URI blobs (≥200 chars) to a `[elided]` marker; lossy but measured +0.0pp (`bench/data/base64.jsonl`) |
-| `numeric_sig_figs` | _(none)_ | round floats to N significant figures (lossy) |
-| `output_control` | `false` | Stage F terse instruction + cap |
-| `output_level` | `"terse"` | `terse` (clean) or `draft` (Chain-of-Draft) |
-| `output_max_tokens` | _(none)_ | impose a hard cap when the request has none |
-| `output_token_budget` | _(none)_ | inject a soft "answer within N tokens" budget |
-| `output_compact_code` | `false` | instruct minified-code output (model-gated) |
-| `retrieve` | `false` | Stage B lexical retrieval (lossy) |
-| `retrieve_keep_ratio` | `0.5` | fraction of the segment's tokens kept (the selection budget) |
-| `retrieve_reorder` | `false` | head+tail U-shape (lost-in-the-middle; lossless) |
-| `retrieve_mmr` | `false` | MMR diversity-aware selection |
-| `retrieve_sentence` | `false` | training-free DSLR sentence pruning (answer + boundary protected) |
-| `cache` / `cache_max_breakpoints` | `false` / `4` | Stage A `cache_control` breakpoints (lossless) |
-| `dedup` | `true` | collapse exact-duplicate lines (lossless) |
-| `dedup_near` | `false` | also collapse near-duplicate lines (SimHash) |
-| `ngram` / `ngram_max_entries` | `false` / `32` | reversible n-gram abbreviation (lossless) |
-| `tool_select` / `tool_trim_desc` | `false` | Stage G keep relevant tools / trim descriptions |
-| `toolout` | `false` → on in `agent`/`aggressive` | Stage T tool-output compression (log / diff / grep + repetitive fallback); positional elision |
-| `toolout_mode` | `"auto"` | Stage T split: `adaptive` · `aggressive` · `auto` (per-segment by noise density) |
-| `toolout_max_lines` / `toolout_min_lines` | `40` / `20` | keep-budget ceiling / skip segments shorter than this |
-| `toolout_template` | `true` | lossless template fold before windowing: consecutive runs (Drain) + interleaved lines (LSH grouping) |
-| `skeletonize` / `minify_code` | `false` | Stage C drop bodies / strip indentation (lossless) |
-| `skeleton_keep_full_top_k` | `5` | bodies kept for the top-k functions overlapping the conversation (Hierarchical Context Pruning) |
-| `skeleton_drop_unmatched` / `skeleton_drop_min_body_lines` | `false` / `8` | also drop zero-overlap functions ≥ N lines entirely (on in `aggressive`) |
-| `multimodal` / `image_detail` | `false` | Stage H downscale to the provider's cap |
-| `tool_minify_schema` | `false` → on in `agent`/`aggressive` | minify tool JSON-Schemas in place (drop `title`/`$schema`/`examples`, dedup boilerplate descriptions): stays valid JSON Schema |
-| `quality_gate` | `true` | after the token gate, revert a lossy cut whose query-relevant coverage drops below the calibrated threshold ("saved tokens by deleting the answer") |
-| `memo` | `true` | proxy-only memo: a conversation prefix seen last turn reuses its compressed bytes verbatim, so the provider's prefix cache stays warm on agent loops (in-memory only) |
-
-Env: `LLMTRIM_PRESET` (preset by name), `LLMTRIM_CONFIG` (config-file path), `LLMTRIM_DB_PATH` (ledger location).
-
-</details>
-
-## 🔒 Security
-
-llmtrim sits between your tool and the provider - its trust model *is* the product. Full threat model in **[SECURITY.md](SECURITY.md)**:
-
-- **Local CA, name-constrained.** Generated on your machine (`~/.llmtrim/ca.pem`, key `0600`), X.509-constrained to LLM API domains. Even a stolen key can't mint a cert for any other host. Trusted per-tool via `NODE_EXTRA_CA_CERTS`; every non-LLM connection blind-tunnels untouched.
-- **No keys, no prompts on disk.** Forwards your tool's own auth. Prompt/response text stays in memory - never logged, never persisted.
-- **Binds `127.0.0.1` only.** No client auth; never expose it on a public interface.
-- **Metadata-only ledger** (`~/.local/share/llmtrim/tracking.db`) - provider, model, token *counts*, never content. Cap 100k events; `retention_days = N` to age-prune; `uninstall --purge` wipes it.
-
-Report vulnerabilities **privately** via a [security advisory](https://github.com/fkiene/llmtrim/security/advisories/new), not a public issue.
-
-## ⚠️ Known limits
-
-These are the current limits, surfaced by the same A/B that proves the savings:
-
-- **Anthropic / Gemini counts are approximate.** No public exact tokenizer, so an o200k BPE proxy is used and flagged (`is_exact() == false`, surfaced in `status`). OpenAI is exact (tiktoken).
-- **Output savings aren't measured live.** The proxy compresses input; an output *saving* needs the A/B counterfactual, which only offline `bench` has. `status` "saved" is input-side.
-- **Default is quality-gated, not lossless.** Lossy stages run where the [eval](bench/README.md) shows quality holds; the token gate ensures fewer tokens, not quality. Want a byte-faithful round-trip? Use `safe`.
-
-## 🙏 Acknowledgments
-
-Every lever is a deterministic implementation of published research - the ideas are theirs, the engineering and the token gate are ours.
-
-<details>
-<summary><strong>Papers + crates behind each stage</strong></summary>
-
-**Retrieval & context (Stage B)**
-- **BM25**: Robertson & Zaragoza, *The Probabilistic Relevance Framework: BM25 and Beyond* (2009) · [`bm25`](https://crates.io/crates/bm25)
-- **BM25+**: Lv & Zhai, *Lower-Bounding Term Frequency Normalization* (CIKM 2011) - δ floor so an occurrence always beats absence
-- **RM3**: Lavrenko & Croft, *Relevance-Based Language Models* (SIGIR 2001) - pseudo-relevance feedback for sparse queries
-- **TextTiling**: Hearst, *TextTiling: Segmenting Text into Multi-paragraph Subtopic Passages* (CL 1997) - prose chunk boundaries at lexical-cohesion valleys
-- **TextRank**: Mihalcea & Tarau, *TextRank: Bringing Order into Texts* (EMNLP 2004)
-- **MMR**: Carbonell & Goldstein, *The Use of MMR, Diversity-Based Reranking…* (SIGIR 1998)
-- **Submodular selection**: Lin & Bilmes, *A Class of Submodular Functions for Document Summarization* (ACL 2011) + cost-ratio knapsack greedy, [arXiv:2008.05391](https://arxiv.org/abs/2008.05391) - token-budgeted chunk/row selection (CELF lazy greedy)
-- **Diverse sampling**: Chen et al., *Fast Greedy MAP Inference for DPP* (NeurIPS 2018) - the json-sample diversity fill
-- **Lost in the Middle**: Liu et al. (2023), [arXiv:2307.03172](https://arxiv.org/abs/2307.03172) - head+tail reordering
-- **DSLR**: Hwang et al. (2024), [arXiv:2407.03627](https://arxiv.org/abs/2407.03627) - sentence-level pruning
-
-**Code (Stages C, F)**
-- **RepoCoder**: Zhang et al. (2023), [arXiv:2303.12570](https://arxiv.org/abs/2303.12570) - AST skeletons beat raw source for non-focus code
-- **Hierarchical Context Pruning**: Zhang et al. (2024), [arXiv:2406.18294](https://arxiv.org/abs/2406.18294) - keep full bodies only for the completion-relevant functions (our ranking is lexical, not embeddings)
-- **The Hidden Cost of Readability**: Pan et al. (2025), [arXiv:2508.13666](https://arxiv.org/abs/2508.13666) - code minification
-- **Reducing Token Usage … via Minification**: Hrubec & Cito (2026), [arXiv:2606.01326](https://arxiv.org/abs/2606.01326) - per-transformation token accounting
-
-**Tool output (Stage T)**
-- **Drain**: He et al., *Drain: An Online Log Parsing Approach with Fixed Depth Tree* (ICWS 2017) - the consecutive template fold
-- **Brain**: Yu et al., *Brain: Log Parsing with Bidirectional Parallel Tree* (IEEE TSC 2023) - positional-voting template extraction
-- **LogLSHD**: Huang et al. (2025), [arXiv:2504.02172](https://arxiv.org/abs/2504.02172) - MinHash-LSH grouping of interleaved same-template lines (ours is deterministic: first-N voting, alphanumeric tokens kept)
-
-**Dedup & abbreviation (Stages E, E+)**
-- **SimHash**: Charikar, *Similarity Estimation Techniques from Rounding Algorithms* (STOC 2002) · [`gaoya`](https://crates.io/crates/gaoya)
-- **CompactPrompt**: Choi et al. (2025), [arXiv:2510.18043](https://arxiv.org/abs/2510.18043) - n-gram abbreviation
-- **Maximal repeats**: Becher et al., *Efficient Repeat Finding via Suffix Arrays* ([arXiv:1304.0528](https://arxiv.org/abs/1304.0528)) + **Re-Pair**, Larsson & Moffat (DCC 1999) - the dictionary miner: all maximal repeated phrases, selected by real token gain
-
-**Output control (Stage F)**
-- **Chain-of-Draft**: Xu et al. (2025), [arXiv:2502.18600](https://arxiv.org/abs/2502.18600) - terse reasoning steps
-- **TALE**: Han et al. (2024), [arXiv:2412.18547](https://arxiv.org/abs/2412.18547) - soft "answer within N tokens" budget
-
-**Serialization (Stage D)**
-- **TOON** (Token-Oriented Object Notation) - Johann Schopplich · [`toon-format`](https://crates.io/crates/toon-format)
-
-Built on the Rust ecosystem: [`tiktoken-rs`](https://crates.io/crates/tiktoken-rs), [`toon-format`](https://crates.io/crates/toon-format), [`bm25`](https://crates.io/crates/bm25), [`gaoya`](https://crates.io/crates/gaoya), [`tree-sitter`](https://crates.io/crates/tree-sitter), [`pest`](https://crates.io/crates/pest), [`image`](https://crates.io/crates/image), [`unicode-normalization`](https://crates.io/crates/unicode-normalization), [`whatlang`](https://crates.io/crates/whatlang), [`hudsucker`](https://crates.io/crates/hudsucker), [`rusqlite`](https://crates.io/crates/rusqlite).
-
-</details>
-
-## 🚀 Try it on one real session
-
-Install, open a new shell, and leave `llmtrim status --watch` running while you work. If the dollars column doesn't move, `llmtrim uninstall` reverses everything. Found a request it mangled? Set `LLMTRIM_CAPTURE_DIR` and [open an issue](https://github.com/fkiene/llmtrim/issues) with the before/after capture - a repro is a fix. And if it saved you money, a ⭐ helps others find it.
-
-## 📄 License
-
-[**AGPL-3.0-only**](LICENSE): use, modify, and self-host freely. **Running llmtrim locally to compress your own traffic triggers no obligations** - the AGPL only applies if you offer a modified llmtrim as a network service to others, in which case you must release your source under the same license. Contributions via [DCO](CONTRIBUTING.md#sign-your-commits-dco) sign-off.
+<sub>Licensed under [AGPL-3.0-only](LICENSE). Running llmtrim locally to compress your own traffic triggers no obligations; the copyleft applies only if you offer a modified llmtrim as a network service to others. Contributions via [DCO](CONTRIBUTING.md#sign-your-commits-dco) sign-off.</sub>
+</content>
+</invoke>

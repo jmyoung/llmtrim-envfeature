@@ -1,4 +1,4 @@
-# Benchmark results snapshot — June 2026
+# Benchmark results snapshot (June 2026)
 
 Raw per-case A/B results backing the tables in [`bench/README.md`](../README.md).
 Committed as measurement evidence: reruns hit a live model and won't reproduce
@@ -12,7 +12,7 @@ byte-for-byte.
   Each file records its own `model` field.
 - **Contents:** one JSON per corpus×preset run. Each file: run config,
   aggregate savings/quality, and per-case metrics (token counts, costs, quality
-  orig vs compressed). No dataset text — corpora are license-bound and rebuilt
+  orig vs compressed). No dataset text: corpora are license-bound and rebuilt
   via `bench/scripts/download.py`.
 - **Rerun:** `bench/scripts/run_all.sh` (needs an API key; see `bench/README.md`).
 

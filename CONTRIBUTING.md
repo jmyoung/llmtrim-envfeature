@@ -1,17 +1,17 @@
 # Contributing to llmtrim
 
-Thanks for your interest! llmtrim is a static, deterministic LLM prompt compressor —
+Thanks for your interest! llmtrim is a static, deterministic LLM prompt compressor:
 zero auxiliary model calls, every transform measured with the real target tokenizer.
 
 ## Ground rules
 
 Four principles guide every change:
 
-- **Simplicity first** — minimum code that solves the problem; no speculative abstraction.
-- **Surgical changes** — touch only what the change requires.
-- **Code universally** — text processing must handle any language/locale, not just English
+- **Simplicity first:** minimum code that solves the problem; no speculative abstraction.
+- **Surgical changes:** touch only what the change requires.
+- **Code universally:** text processing must handle any language/locale, not just English
   (detect the language, use the matching resource; prefer Unicode-aware operations).
-- **Goal-driven** — turn the task into a verifiable test, then make it pass.
+- **Goal-driven:** turn the task into a verifiable test, then make it pass.
 
 ## Development
 
@@ -36,7 +36,7 @@ git config core.hooksPath .githooks
 Stages implement the `Transform` trait (`src/gate.rs`) and are assembled in
 `stages_for` (`src/lib.rs`). A stage:
 
-1. Declares a `GateKind` — `InputTokens` (reverted if it doesn't reduce tokens),
+1. Declares a `GateKind`: `InputTokens` (reverted if it doesn't reduce tokens),
    `OutputShaping`, or `Structural`.
 2. Mutates the JSON-backed `Request` at JSON-pointer addresses (lossless by construction
    for any field it doesn't touch).

@@ -51,7 +51,7 @@ brew install --build-from-source ./Formula/llmtrim.rb
 npm install -g @llmtrim/cli && llmtrim setup   # prebuilt binary for your platform (no Rust needed)
 ```
 
-`npx @llmtrim/cli compress < req.json` works for trying it without installing — but use the
+`npx @llmtrim/cli compress < req.json` works for trying it without installing, but use the
 global install for `setup`: the daemon and autostart need a binary that survives
 `npm cache clean`, which the npx cache does not.
 
@@ -71,7 +71,7 @@ scoop install llmtrim
 
 ## Docker
 
-For containers and CI — runs the proxy with the state on a volume:
+For containers and CI: runs the proxy with the state on a volume:
 
 ```bash
 docker run -d --name llmtrim -p 43117:43117 -v llmtrim-state:/data ghcr.io/fkiene/llmtrim
@@ -81,7 +81,7 @@ export HTTPS_PROXY=http://localhost:43117 NODE_EXTRA_CA_CERTS=~/.llmtrim-ca.pem
 ```
 
 The image binds `0.0.0.0` inside the container (set `LLMTRIM_BIND` to change). The two
-`export`s are the whole client side — put them in your shell profile or your CI job env.
+`export`s are the whole client side; put them in your shell profile or your CI job env.
 
 ## From source
 
@@ -112,12 +112,12 @@ llmtrim setup     # CA + HTTPS_PROXY/NODE_EXTRA_CA_CERTS in your shell profile +
 llmtrim status    # savings dashboard (add --watch for a live view)
 ```
 
-llmtrim is purely a MITM proxy - it configures your **environment** (no IDE settings).
+llmtrim is purely a MITM proxy; it configures your **environment** (no IDE settings).
 See [the README](README.md#how-it-reaches-your-tools) for how it reaches your tools.
 
 ## Update
 
-One command, channel-aware - it detects how llmtrim was installed and **restarts the daemon
+One command, channel-aware: it detects how llmtrim was installed and **restarts the daemon
 onto the new binary** (a binary swap alone leaves the old version running):
 
 ```bash
@@ -130,11 +130,11 @@ llmtrim update
 
 `status` shows a one-line notice when a newer release exists (checked at most once a day,
 cached; set `LLMTRIM_NO_UPDATE_CHECK=1` to disable, and it's skipped offline). Pin a version
-in production and update promptly - security fixes land on the latest release (see SECURITY.md).
+in production and update promptly; security fixes land on the latest release (see SECURITY.md).
 
 ## Uninstall
 
-One command, fully transparent - the exact inverse of `setup`:
+One command, fully transparent: the exact inverse of `setup`:
 
 ```bash
 llmtrim uninstall            # stop daemon, disable autostart, strip env block, remove CA + state + binary
@@ -144,6 +144,6 @@ llmtrim uninstall --keep-binary
 
 Installed via a package manager? Run `llmtrim uninstall` **first** (it undoes `setup`;
 removing the package alone leaves `HTTPS_PROXY` pointing at a dead proxy and breaks your
-LLM tools), then remove the binary with your manager — `uninstall` detects the channel
+LLM tools), then remove the binary with your manager. `uninstall` detects the channel
 and prints the exact command (`npm uninstall -g @llmtrim/cli` / `cargo uninstall llmtrim` /
 `brew uninstall llmtrim`).

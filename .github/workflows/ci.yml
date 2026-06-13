@@ -160,8 +160,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the XCFramework
         run: crates/llmtrim-uniffi/scripts/build-xcframework.sh
-      - name: Compile the SwiftPM package against it
-        run: swift build --package-path crates/llmtrim-uniffi/packaging/swift
+      - name: Build + test the SwiftPM package against it
+        run: swift test --package-path crates/llmtrim-uniffi/packaging/swift
 
   # Gate the AGPL-3.0-only relicensing: fail if any dependency carries a license
   # outside deny.toml's allow-list (e.g. GPL/proprietary) or an unknown source.

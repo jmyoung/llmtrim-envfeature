@@ -27,5 +27,10 @@ let package = Package(
             dependencies: ["llmtrimFFI"],
             path: "Sources/Llmtrim"
         ),
+        .testTarget(
+            name: "LlmtrimTests",
+            dependencies: ["Llmtrim"],
+            path: "Tests/LlmtrimTests"
+        ),
     ]
 )

@@ -28,7 +28,7 @@
   <a href="#what-it-actually-does">What it does</a> &bull;
   <a href="#see-it-on-real-output">See it in action</a> &bull;
   <a href="#get-started">Get started</a> &bull;
-  <a href="#use-it-as-a-cli-or-library">CLI &amp; library</a> &bull;
+  <a href="#use-it-as-a-cli-mcp-or-library">CLI, MCP &amp; library</a> &bull;
   <a href="#works-with">Works with</a> &bull;
   <a href="#configuration">Configuration</a> &bull;
   <a href="#the-numbers">Numbers</a>
@@ -204,7 +204,7 @@ llmtrim uninstall   # exact inverse of setup: removes all three changes
 
 </details>
 
-## Use it as a CLI or library
+## Use it as a CLI, MCP, or library
 
 The same compression runs with no proxy and no setup, as a one-shot CLI, an embeddable Rust crate, or native bindings for **Python, Ruby, Swift and Kotlin**. No extra model calls, no network: the deterministic engine runs in your process.
 
@@ -276,8 +276,10 @@ Any tool that honors `HTTPS_PROXY` and an env-provided CA, which is essentially 
 | Gemini CLI | ✅ | |
 | Cursor / VS Code extensions | ✅ | Node-based: picks up `NODE_EXTRA_CA_CERTS` |
 | Aider, OpenCode, any `HTTPS_PROXY`-aware CLI | ✅ | |
-| Your own app / SDK | ✅ | or call the [CLI / library](#use-it-as-a-cli-or-library) directly |
+| Your own app / SDK | ✅ | or call the [CLI / library](#use-it-as-a-cli-mcp-or-library) directly |
 | GitHub Copilot | ❌ | certificate pinning blocks interception |
+
+Prefer no proxy? Any MCP client (Claude Code, Cursor, custom agents) can call llmtrim directly as tools instead: run `llmtrim mcp install`, or see [CLI, MCP, or library](#use-it-as-a-cli-mcp-or-library).
 
 Providers come from the [`llm_providers`](https://crates.io/crates/llm_providers) registry (OpenAI, Anthropic, Google, DeepSeek, Mistral, xAI, Moonshot, Zhipu, Qwen, OpenRouter, …) and update with it. Every non-LLM connection passes through untouched.
 

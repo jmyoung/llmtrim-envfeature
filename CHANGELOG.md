@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-06-14
+
 ### Added
 - **Named academic benchmarks: TruthfulQA, SQuAD v2, BFCL.** The quality A/B now ships
   three more standard suites alongside GSM8K, so the accuracy-preservation results name
@@ -351,7 +353,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/fkiene/llmtrim/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/fkiene/llmtrim/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/fkiene/llmtrim/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/fkiene/llmtrim/compare/v0.1.7...v0.1.8

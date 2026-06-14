@@ -33,24 +33,22 @@ pub fn configure(enable: bool, port: u16) -> Result<()> {
 pub fn hide_console_window() {
     #[cfg(windows)]
     {
-        // Minimal Win32 FFI (no extra dep): GetConsoleWindow (kernel32) + ShowWindow (user32).
-        const SW_HIDE: i32 = 0;
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetConsoleWindow() -> isize;
-        }
-        #[link(name = "user32")]
-        unsafe extern "system" {
-            fn ShowWindow(hwnd: isize, n_cmd_show: i32) -> i32;
-        }
-        // SAFETY: both are plain Win32 calls with no memory ownership. GetConsoleWindow returns
-        // 0 when there's no console attached, in which case ShowWindow(0, ..) is a harmless no-op.
-        unsafe {
-            let hwnd = GetConsoleWindow();
-            if hwnd != 0 {
-                ShowWindow(hwnd, SW_HIDE);
-            }
-        }
+        // Hiding the window needs `GetConsoleWindow` + `ShowWindow`, both `unsafe` FFI this crate
+        // forbids (`unsafe_code = "forbid"`), so shell out to PowerShell with a one-shot P/Invoke
+        // — same pattern as `setup::broadcast_env_change`. SW_HIDE = 0. `GetConsoleWindow` returns
+        // 0 when no console is attached, in which case `ShowWindow(0, ..)` is a harmless no-op.
+        // Best-effort: a failure just leaves the window visible, never blocks the daemon.
+        const PS: &str = "\
+            $sig = '[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow();\
+            [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);';\
+            $t = Add-Type -MemberDefinition $sig -Name NativeMethods -Namespace Win32 -PassThru;\
+            $h = $t::GetConsoleWindow();\
+            if ($h -ne [IntPtr]::Zero) { [void]$t::ShowWindow($h, 0) }";
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", PS])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 

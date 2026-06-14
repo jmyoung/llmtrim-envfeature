@@ -202,7 +202,20 @@ llmtrim uninstall   # exact inverse of setup: removes all three changes
 
 ## Use it as a CLI or library
 
-The same compression runs with no proxy and no setup, as a one-shot CLI, an embeddable Rust crate, or native bindings for **Python, Ruby, Swift and Kotlin**. No extra model calls, no network: the deterministic engine runs in your process.
+The same compression runs with no proxy and no setup. No extra model calls, no network: the deterministic engine runs in your process, either as a one-shot CLI or as an embedded library.
+
+### As a CLI
+
+Pipe a request in, get a compressed one out:
+
+```bash
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim compress --provider openai > out.json
+echo '{"model":"gpt-4o","messages":[...]}' | llmtrim send     --provider openai   # compress, call, print
+```
+
+### As a library
+
+An embeddable Rust crate, or native bindings for **Python, Ruby, Swift and Kotlin**:
 
 | Language | Install |
 |---|---|
@@ -211,13 +224,6 @@ The same compression runs with no proxy and no setup, as a one-shot CLI, an embe
 | Ruby | `gem install llmtrim` |
 | Kotlin | `implementation("io.github.fkiene:llmtrim:0.1.9")` (Maven Central) |
 | Swift | `.package(url: "https://github.com/fkiene/llmtrim-swift", from: "0.1.8")` (SwiftPM) |
-
-**CLI.** Pipe a request in, get a compressed one out:
-
-```bash
-echo '{"model":"gpt-4o","messages":[...]}' | llmtrim compress --provider openai > out.json
-echo '{"model":"gpt-4o","messages":[...]}' | llmtrim send     --provider openai   # compress, call, print
-```
 
 **Rust.** The engine is the [`llmtrim-core`](https://crates.io/crates/llmtrim-core) crate (no `tokio`, no network in its dependency tree):
 

@@ -223,22 +223,25 @@ jobs:
           ./gradlew publishToMavenCentral --no-daemon --no-configuration-cache
 
   # ---- Swift: build the XCFramework, attach it to the release, emit the checksum --------
-  # NOTE: making the *tagged* Package.swift consume the remote binaryTarget has a
-  # chicken-and-egg (the checksum isn't known until the zip is built, but SwiftPM reads
-  # Package.swift at the tag). This job publishes the zip + checksum; switching Package.swift
-  # to the remote `binaryTarget(url:checksum:)` is the remaining manual/decision step
-  # (see crates/llmtrim-uniffi/packaging/swift/Package.swift and the PR notes).
+  # The tagged in-repo Package.swift can't carry the checksum (it's only known after the zip
+  # is built, post-tag). Distribution is therefore a separate repo, fkiene/llmtrim-swift,
+  # whose Package.swift consumes the remote binaryTarget; the swift-package-bump job below
+  # updates and tags it from this job's checksum output, so consumers get a normal SwiftPM
+  # `from: "X.Y.Z"`.
   swift-xcframework:
     name: Swift XCFramework (release asset)
     runs-on: macos-latest
     permissions:
       contents: write   # upload the asset to the release
+    outputs:
+      checksum: ${{ steps.zip.outputs.checksum }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the XCFramework
         run: crates/llmtrim-uniffi/scripts/build-xcframework.sh
       - name: Zip + checksum + attach to the release
+        id: zip
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -248,6 +251,7 @@ jobs:
           ditto -c -k --keepParent llmtrimFFI.xcframework llmtrimFFI.xcframework.zip
           sum="$(swift package compute-checksum llmtrimFFI.xcframework.zip)"
           echo "xcframework checksum: $sum"
+          echo "checksum=$sum" >> "$GITHUB_OUTPUT"
           echo "### Swift XCFramework" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`swift" >> "$GITHUB_STEP_SUMMARY"
           echo ".binaryTarget(name: \"llmtrimFFI\"," >> "$GITHUB_STEP_SUMMARY"
@@ -255,3 +259,58 @@ jobs:
           echo "    checksum: \"$sum\")" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
           gh release upload "$TAG" llmtrimFFI.xcframework.zip --clobber
+
+  # Retag the standalone Swift package repo (fkiene/llmtrim-swift) to this release: rewrite
+  # its Package.swift binaryTarget url + checksum to the XCFramework just built and tag it,
+  # so `.package(url: ".../llmtrim-swift", from: "X.Y.Z")` resolves without a manual bump.
+  # SETUP: a cross-repo Contents:write token in secret SWIFT_REPO_TOKEN (the default
+  # GITHUB_TOKEN can't push to another repo). Inert — skips with a warning — if it's unset,
+  # so it never blocks a release.
+  swift-package-bump:
+    name: Bump llmtrim-swift
+    needs: swift-xcframework
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on the cross-repo token
+        id: gate
+        env:
+          TOKEN: ${{ secrets.SWIFT_REPO_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::SWIFT_REPO_TOKEN not set; skipping the llmtrim-swift bump"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout llmtrim-swift
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: fkiene/llmtrim-swift
+          token: ${{ secrets.SWIFT_REPO_TOKEN }}
+      - name: Point Package.swift at this release and tag it
+        if: steps.gate.outputs.go == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+          SUM: ${{ needs.swift-xcframework.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          [ -n "$SUM" ] || { echo "no checksum from the xcframework job" >&2; exit 1; }
+          ver="${TAG#v}"
+          sed -i -E "s#releases/download/v[0-9]+\.[0-9]+\.[0-9]+/llmtrimFFI#releases/download/${TAG}/llmtrimFFI#" Package.swift
+          sed -i -E "s#checksum: \"[a-f0-9]{64}\"#checksum: \"${SUM}\"#" Package.swift
+          sed -i -E "s#from: \"[0-9]+\.[0-9]+\.[0-9]+\"#from: \"${ver}\"#" README.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Package.swift already current for ${ver}"
+          else
+            git commit -am "Track llmtrim ${ver} (XCFramework url + checksum)"
+            git push origin HEAD
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${ver}" >/dev/null 2>&1; then
+            echo "tag ${ver} already exists; leaving it"
+          else
+            git tag "${ver}"
+            git push origin "${ver}"
+          fi

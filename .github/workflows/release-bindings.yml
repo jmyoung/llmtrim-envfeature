@@ -270,6 +270,7 @@ jobs:
     name: Bump llmtrim-swift
     needs: swift-xcframework
     runs-on: ubuntu-latest
+    permissions: {}   # pushes to the other repo with SWIFT_REPO_TOKEN, not GITHUB_TOKEN
     steps:
       - name: Gate on the cross-repo token
         id: gate
@@ -295,11 +296,12 @@ jobs:
           SUM: ${{ needs.swift-xcframework.outputs.checksum }}
         run: |
           set -euo pipefail
-          [ -n "$SUM" ] || { echo "no checksum from the xcframework job" >&2; exit 1; }
+          [[ "$SUM" =~ ^[a-f0-9]{64}$ ]] || { echo "unexpected checksum from the xcframework job: '$SUM'" >&2; exit 1; }
           ver="${TAG#v}"
           sed -i -E "s#releases/download/v[0-9]+\.[0-9]+\.[0-9]+/llmtrimFFI#releases/download/${TAG}/llmtrimFFI#" Package.swift
           sed -i -E "s#checksum: \"[a-f0-9]{64}\"#checksum: \"${SUM}\"#" Package.swift
-          sed -i -E "s#from: \"[0-9]+\.[0-9]+\.[0-9]+\"#from: \"${ver}\"#" README.md
+          # Anchor to the llmtrim-swift line so an unrelated `.package(.., from:)` in the README is left alone.
+          sed -i -E "/llmtrim-swift/s#from: \"[0-9]+\.[0-9]+\.[0-9]+\"#from: \"${ver}\"#" README.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then

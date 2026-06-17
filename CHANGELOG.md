@@ -35,6 +35,10 @@ All notable changes to this project are documented here. The format follows
   installs self-heal: the daemon rewrites a pre-`NO_PROXY` block in place when it starts at
   login (reusing the wired port), so no `setup` re-run is needed. Already-running apps still
   need a one-time restart to pick up the new environment.
+- **Token-F1 bench scorer now char-tokenizes CJK, fixing degenerate scores on
+  Chinese/Japanese/Korean.** The scorer split on whitespace, which CJK text doesn't use, so a
+  whole CJK answer collapsed to one or two "tokens" and the reported F1 was meaningless. It now
+  character-tokenizes CJK runs, so quality benchmarks over CJK corpora report a real F1.
 - **`tool_trim` stage now appears as `"tool_trim"` in capture `stages` lists** (was `"tools"`).
   When description trimming is active (`agent`/`aggressive` presets), the `ToolStage` stage name
   is now `"tool_trim"` instead of `"tools"`. This lets QA auditors correctly identify

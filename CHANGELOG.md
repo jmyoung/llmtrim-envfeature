@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-18
+
 ### Changed
 - **Relicensed from AGPL-3.0-only to MPL-2.0.** llmtrim is now under the Mozilla Public
   License 2.0. You can use it freely, including commercially and as a network service, with
@@ -474,7 +476,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fkiene/llmtrim/compare/v0.1.13...v0.2.0
 [0.1.13]: https://github.com/fkiene/llmtrim/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/fkiene/llmtrim/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/fkiene/llmtrim/compare/v0.1.10...v0.1.11

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-19
+
 ### Added
 - **`LLMTRIM_UPSTREAM_PROXY` env var** — set this in the daemon's launch environment
   (launchd plist / systemd unit, not `.profile`) to route the daemon's own outbound
@@ -508,7 +510,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/fkiene/llmtrim/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/fkiene/llmtrim/compare/v0.1.13...v0.2.0
 [0.1.13]: https://github.com/fkiene/llmtrim/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/fkiene/llmtrim/compare/v0.1.11...v0.1.12

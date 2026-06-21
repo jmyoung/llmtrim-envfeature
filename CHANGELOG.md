@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-21
+
 ### Fixed
 - **`status` dashboard: a stale daemon now offers a working restart, not a broken command.**
   When the running daemon was an older build than the installed binary (after an update), the
@@ -598,7 +600,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/fkiene/llmtrim/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/fkiene/llmtrim/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/fkiene/llmtrim/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/fkiene/llmtrim/compare/v0.1.13...v0.2.0

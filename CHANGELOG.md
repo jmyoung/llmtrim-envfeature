@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-21
+
 ### Added
 - **Interactive cost dashboard on `llmtrim status`.** On a terminal, `status` now opens a
   tabbed TUI (Overview / Sessions / Detail): what you saved, what you paid, the daily trend,
@@ -581,7 +583,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fkiene/llmtrim/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/fkiene/llmtrim/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/fkiene/llmtrim/compare/v0.1.13...v0.2.0
 [0.1.13]: https://github.com/fkiene/llmtrim/compare/v0.1.12...v0.1.13

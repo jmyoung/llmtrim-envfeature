@@ -2,7 +2,10 @@
   "productName": "llmtrim",
   "identifier": "io.github.fkiene.llmtrim-tray",
   "build": {
-    "frontendDist": "./ui"
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "./dist"
   },
   "app": {
     "withGlobalTauri": true,

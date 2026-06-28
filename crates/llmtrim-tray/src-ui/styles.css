@@ -16,6 +16,7 @@
   --accent-deep: #1fbf8a;
   --accent-soft: rgba(52, 224, 161, 0.14);
   --danger: #ff7a7a;
+  --danger-soft: rgba(255, 122, 122, 0.12);
 
   --track: rgba(255, 255, 255, 0.07);
   --footer-bg: rgba(11, 13, 18, 0.7);
@@ -76,12 +77,13 @@ body {
 
     --ink: #131722;
     --ink-2: #49515f;
-    --ink-3: #717a8a;
+    --ink-3: #5c6470;
 
     --accent: #0ca678;
     --accent-deep: #099268;
     --accent-soft: rgba(12, 166, 120, 0.12);
-    --danger: #e03131;
+    --danger: #c92a2a;
+    --danger-soft: rgba(201, 42, 42, 0.1);
 
     --track: rgba(17, 24, 39, 0.08);
     --footer-bg: rgba(255, 255, 255, 0.72);
@@ -384,7 +386,7 @@ body {
 }
 
 .state-error .state-icon {
-  background: rgba(255, 122, 122, 0.12);
+  background: var(--danger-soft);
   color: var(--danger, #ff7a7a);
 }
 

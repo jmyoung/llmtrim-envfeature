@@ -1,0 +1,74 @@
+name: Tray app
+
+# The Tauri tray app is excluded from the workspace default-members, so the main
+# CI (ci.yml) never compiles it. This workflow is its dedicated gate: it builds
+# the app on the two platforms it ships to (macOS + Windows). It is deliberately
+# NOT a required status check and is wholly separate from release.yml, so a tray
+# failure can never block the crates.io / npm release of the core + CLI.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/llmtrim-tray/**'
+      - 'crates/llmtrim-ledger/**'
+      - '.github/workflows/tray.yml'
+  pull_request:
+    paths:
+      - 'crates/llmtrim-tray/**'
+      - 'crates/llmtrim-ledger/**'
+      - '.github/workflows/tray.yml'
+
+concurrency:
+  group: tray-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: crates/llmtrim-tray
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The Tauri build is its own artifact set; keep it off the ci.yml caches.
+          shared-key: tray-${{ matrix.os }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/llmtrim-tray/package-lock.json
+      # Build the frontend first: tauri-build embeds `frontendDist` (./dist) into the
+      # binary at compile time, so dist/ must exist before any cargo build.
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Rustfmt
+        run: cargo fmt -p llmtrim-tray -- --check
+      # No `-- -D warnings`: the crate's [lints.rust] warnings = "deny" already fails on
+      # any warning, and the extra flag would only fork the build cache (see CLAUDE.md).
+      - name: Clippy
+        run: cargo clippy -p llmtrim-tray --all-targets
+      # Compile the app (icons, capabilities and tauri.conf are all processed by the
+      # tauri-build script here). Bundling/codesigning is left to the release flow.
+      - name: Build
+        run: cargo build -p llmtrim-tray --release

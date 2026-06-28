@@ -10,9 +10,18 @@ use anyhow::Context as _;
 use llmtrim_ledger::breakdown_db::BreakdownDb;
 use llmtrim_ledger::dashboard::{Dashboard, build_dashboard};
 use llmtrim_ledger::tracking::{Period, db_path};
+use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_positioner::{Position, WindowExt};
+
+/// Menu-bar glyph bytes. macOS gets the black template image (the system tints
+/// it for light/dark bars); every other platform gets the green glyph so it
+/// stays visible on a dark taskbar. See `tools/gen_icons.py`.
+#[cfg(target_os = "macos")]
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-mono.png");
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray-color.png");
 
 /// Window is re-shown only if the last blur-dismiss is older than this. A tray
 /// click that dismisses a focused popover delivers `Focused(false)` (hide) just
@@ -155,8 +164,14 @@ fn main() {
             // Tray icon with macOS title and tooltip.
             // ----------------------------------------------------------------
             let tray_app = app.handle().clone();
+            // tauri::Error is a std::error::Error, so `?` converts into the
+            // setup closure's Box<dyn Error> directly (anyhow's Context would not).
+            let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
             TrayIconBuilder::new()
                 .id("main")
+                .icon(tray_icon)
+                // macOS template: the black glyph is auto-tinted per menu-bar theme.
+                .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("llmtrim — compression savings")
                 .on_tray_icon_event(move |tray, event| {
                     // Forward to positioner so TrayCenter positioning works.

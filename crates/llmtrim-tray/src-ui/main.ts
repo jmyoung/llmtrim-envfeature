@@ -5,6 +5,7 @@ import "./styles.css";
 import type { Dashboard } from "./types.js";
 import { el } from "./dom.js";
 import { agentCard } from "./card.js";
+import { createSettingsView } from "./settings.js";
 import { formatBill, formatPct } from "./format.js";
 
 // Poll-interval choices (seconds). The label is built with Intl so the unit
@@ -22,6 +23,7 @@ const num = new Intl.NumberFormat(undefined);
 
 const app = document.getElementById("app");
 if (!app) throw new Error("missing #app root");
+const appRoot: HTMLElement = app;
 
 const heroPct = el("span", { class: "hero-pct", "aria-live": "polite" }, ["—"]);
 const heroSub = el("span", { class: "hero-sub" }, ["of input trimmed"]);
@@ -48,15 +50,65 @@ for (const secs of POLL_OPTIONS) {
 intervalSelect.value = "30";
 intervalSelect.addEventListener("change", onIntervalChange);
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function gearIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const paths = [
+    "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+    "M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
+  ];
+  for (const d of paths) {
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", d);
+    svg.appendChild(p);
+  }
+  return svg;
+}
+
+const settingsBtn = el(
+  "button",
+  { class: "icon-btn", type: "button", "aria-label": "Settings" },
+  [gearIcon()],
+);
+settingsBtn.addEventListener("click", () => void openSettings());
+
 const quitBtn = el("button", { class: "quit", type: "button" }, ["Quit"]);
 quitBtn.addEventListener("click", () => void invoke("quit"));
 
 const footer = el("footer", { class: "footer" }, [
   countdown,
-  el("div", { class: "footer-controls" }, [intervalSelect, quitBtn]),
+  el("div", { class: "footer-controls" }, [
+    intervalSelect,
+    settingsBtn,
+    quitBtn,
+  ]),
 ]);
 
-app.append(header, list, footer);
+const settingsView = createSettingsView(closeSettings);
+
+app.append(header, list, footer, settingsView.root);
+
+async function openSettings(): Promise<void> {
+  appRoot.classList.add("settings-open");
+  await settingsView.refresh();
+  // Move focus into the panel so keyboard users who arrive via the OS menu
+  // (which hides nothing focusable) land on a control instead of nowhere.
+  settingsView.root.querySelector<HTMLElement>("button, [role=switch]")?.focus();
+}
+
+function closeSettings(): void {
+  appRoot.classList.remove("settings-open");
+  settingsBtn.focus();
+}
 
 // ---------------------------------------------------------------------------
 // Countdown — drives "Next update in Ns" from `next_update_secs`.
@@ -131,8 +183,6 @@ function stateBlock(title: string, body: string, isError = false): HTMLElement {
   ]);
 }
 
-const SVG_NS = "http://www.w3.org/2000/svg";
-
 function svgIcon(paths: string[]): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -194,3 +244,6 @@ function errorMessage(e: unknown): string {
 // Initial load + server-push subscription from the background poll loop.
 void refresh();
 void listen<Dashboard>("dashboard", (ev) => applyDashboard(ev.payload));
+
+// Right-click tray menu -> "Settings…" emits this with no payload.
+void listen("show-settings", () => void openSettings());

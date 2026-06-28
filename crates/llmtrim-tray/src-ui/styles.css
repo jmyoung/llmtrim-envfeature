@@ -482,11 +482,291 @@ body {
   outline-offset: 1px;
 }
 
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.icon-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.icon-btn:active {
+  transform: translateY(0.5px);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------- settings view ---------- */
+
+/* Swapped in over the savings content: the settings panel sits as a sibling of
+   header/list/footer and is shown only when #app has .settings-open. */
+.settings {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.settings-open > .header,
+.settings-open > .list,
+.settings-open > .footer {
+  display: none;
+}
+
+.settings-open > .settings {
+  display: flex;
+  animation: settings-in 0.22s var(--ease) both;
+}
+
+@keyframes settings-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+.set-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.set-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 5px 12px 5px 8px;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    color 0.15s var(--ease);
+}
+
+.set-back:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+.set-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.set-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.set-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.set-group {
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.row-hint {
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+
+.row-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.row-status {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.row-status-error {
+  color: var(--danger);
+}
+
+/* ---------- toggle switch ---------- */
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+/* The real checkbox stays focusable and operable; it is visually hidden but the
+   styled track below reflects its state. */
+.switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-track {
+  flex: none;
+  margin-left: auto;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--track);
+  border: 1px solid var(--border-strong);
+  transition: background 0.18s var(--ease);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink-2);
+  transition:
+    transform 0.18s var(--ease),
+    background 0.18s var(--ease);
+}
+
+.switch-input:checked + .switch-track {
+  background: var(--accent);
+  border-color: var(--accent-deep);
+}
+
+.switch-input:checked + .switch-track .switch-thumb {
+  background: #fff;
+  transform: translateX(18px);
+}
+
+.switch-input:focus-visible + .switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- settings buttons ---------- */
+
+.set-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.set-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 7px 16px;
+  cursor: pointer;
+  transition:
+    background 0.15s var(--ease),
+    border-color 0.15s var(--ease),
+    opacity 0.15s var(--ease);
+}
+
+.set-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.set-btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.set-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.set-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.set-btn-accent {
+  color: #05140f;
+  background: var(--accent);
+  border-color: var(--accent-deep);
+}
+
+.set-btn-accent:hover:not(:disabled) {
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .card,
   .meter-fill,
   .interval,
-  .quit {
+  .quit,
+  .icon-btn,
+  .settings,
+  .set-back,
+  .set-btn,
+  .switch-track,
+  .switch-thumb {
     animation: none;
     transition: none;
   }

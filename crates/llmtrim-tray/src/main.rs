@@ -11,6 +11,7 @@ use llmtrim_ledger::breakdown_db::BreakdownDb;
 use llmtrim_ledger::dashboard::{Dashboard, build_dashboard, parse_period, sanitise_error};
 use llmtrim_ledger::tracking::{Period, db_path};
 use tauri::image::Image;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tauri_plugin_positioner::{Position, WindowExt};
@@ -113,13 +114,108 @@ fn get_agent_trend(agent: String, period: String) -> Result<Vec<f64>, String> {
 /// Update the poll interval for the background refresh loop.
 #[tauri::command]
 fn set_poll_interval(secs: u64, state: State<'_, Arc<Mutex<TrayState>>>) {
-    lock_state(&state).poll_interval_secs = secs;
+    // Floor at 1s: `secs = 0` would make the poll loop spin without sleeping,
+    // pinning a core on continuous SQLite reads and webview events.
+    lock_state(&state).poll_interval_secs = secs.max(1);
 }
 
 /// Quit the application cleanly.
 #[tauri::command]
 fn quit(app: AppHandle) {
     app.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Proxy / autostart control — shells out to the sibling `llmtrim` CLI.
+//
+// Actions run in Rust (not the JS shell plugin), spawning only the resolved
+// `llmtrim` binary with fixed arguments. No user input reaches the command line,
+// so the JS shell capability stays disabled and the CSP keeps `connect-src
+// 'none'`. These are real-IO entry-points, legitimately uncovered by unit tests.
+// ---------------------------------------------------------------------------
+
+/// Resolve the `llmtrim` CLI: prefer the binary installed next to the tray app
+/// (how every bundle ships it), else fall back to a bare name resolved on PATH.
+///
+/// The PATH fallback is a deliberate, bounded trade-off: every caller passes a
+/// fixed argument literal (`start` / `stop` / `autostart …`), never user or JS
+/// input, so there is no argument-injection surface. A maintainer adding a new
+/// caller must keep that invariant — do not pass dynamic data on this command
+/// line, or the PATH fallback becomes a hijack vector.
+fn llmtrim_binary() -> std::path::PathBuf {
+    let name = if cfg!(windows) {
+        "llmtrim.exe"
+    } else {
+        "llmtrim"
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join(name);
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    std::path::PathBuf::from(name)
+}
+
+/// Run `llmtrim <args>` to completion, mapping any failure to a sanitised string
+/// (full detail logged to stderr, never surfaced to JS).
+fn run_llmtrim(args: &[&str]) -> Result<(), String> {
+    let bin = llmtrim_binary();
+    let output = std::process::Command::new(&bin)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            eprintln!("llmtrim-tray: failed to run llmtrim {args:?}: {e}");
+            "could not run the llmtrim CLI — is it installed?".to_string()
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        eprintln!(
+            "llmtrim-tray: llmtrim {args:?} exited {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Err("the llmtrim command failed — see the proxy logs".to_string())
+    }
+}
+
+/// Start the background interceptor (no-op if already running).
+#[tauri::command]
+fn start_proxy() -> Result<(), String> {
+    run_llmtrim(&["start"])
+}
+
+/// Stop the background interceptor.
+#[tauri::command]
+fn stop_proxy() -> Result<(), String> {
+    run_llmtrim(&["stop"])
+}
+
+/// Whether the tray is set to open at login. Reads the CLI's scriptable status;
+/// any failure reads as "off" so the toggle defaults to a safe state.
+#[tauri::command]
+fn get_tray_autostart() -> bool {
+    let bin = llmtrim_binary();
+    std::process::Command::new(&bin)
+        .args(["autostart", "--tray", "--status"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+        .unwrap_or(false)
+}
+
+/// Enable or disable opening the tray at login.
+#[tauri::command]
+fn set_tray_autostart(enable: bool) -> Result<(), String> {
+    if enable {
+        run_llmtrim(&["autostart", "--tray"])
+    } else {
+        run_llmtrim(&["autostart", "--tray", "--off"])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,12 +266,66 @@ fn main() {
             // tauri::Error is a std::error::Error, so `?` converts into the
             // setup closure's Box<dyn Error> directly (anyhow's Context would not).
             let tray_icon = Image::from_bytes(TRAY_ICON_PNG)?;
+
+            // Right-click context menu. On Linux this is the primary interaction:
+            // left-click toggle events are not reliably delivered by the
+            // StatusNotifier/AppIndicator host, so the menu's "Open" item is how
+            // Linux users reach the popover. On macOS/Windows the menu is the
+            // right-click companion to the left-click toggle.
+            let open_item = MenuItemBuilder::with_id("open", "Open llmtrim").build(app)?;
+            let start_item = MenuItemBuilder::with_id("start", "Start proxy").build(app)?;
+            let stop_item = MenuItemBuilder::with_id("stop", "Stop proxy").build(app)?;
+            let settings_item = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .items(&[
+                    &open_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &start_item,
+                    &stop_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &settings_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit_item,
+                ])
+                .build()?;
+
+            let menu_app = app.handle().clone();
             TrayIconBuilder::new()
                 .id("main")
                 .icon(tray_icon)
                 // macOS template: the black glyph is auto-tinted per menu-bar theme.
                 .icon_as_template(cfg!(target_os = "macos"))
                 .tooltip("llmtrim — compression savings")
+                .menu(&menu)
+                // Left-click toggles the popover via `on_tray_icon_event`; keep the
+                // menu on right-click only. (No-op on Linux, where this is unsupported.)
+                .show_menu_on_left_click(false)
+                .on_menu_event(move |_app, event| match event.id().as_ref() {
+                    "open" => show_popover(&menu_app),
+                    // Run on a worker thread: `run_llmtrim` blocks until the CLI
+                    // exits (first-run CA generation can take a moment) and menu
+                    // events fire on the main event loop, so calling inline would
+                    // freeze the icon. Errors are logged to stderr by `run_llmtrim`;
+                    // the Settings panel is the interactive surface for failures.
+                    "start" => {
+                        std::thread::spawn(|| {
+                            let _ = start_proxy();
+                        });
+                    }
+                    "stop" => {
+                        std::thread::spawn(|| {
+                            let _ = stop_proxy();
+                        });
+                    }
+                    "settings" => {
+                        // Open the popover and ask the UI to show its settings view.
+                        show_popover(&menu_app);
+                        let _ = menu_app.emit("show-settings", ());
+                    }
+                    "quit" => menu_app.exit(0),
+                    _ => {}
+                })
                 .on_tray_icon_event(move |tray, event| {
                     // Forward to positioner so TrayCenter positioning works.
                     tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
@@ -222,6 +372,10 @@ fn main() {
             get_dashboard,
             get_agent_trend,
             set_poll_interval,
+            start_proxy,
+            stop_proxy,
+            get_tray_autostart,
+            set_tray_autostart,
             quit,
         ])
         .build(tauri::generate_context!())
@@ -280,11 +434,19 @@ fn toggle_popover(app: &AppHandle) {
                 return;
             }
         }
-        // Position next to the tray icon before showing.
-        let _ = popover.move_window(Position::TrayCenter);
-        let _ = popover.show();
-        let _ = popover.set_focus();
+        show_popover(app);
     }
+}
+
+/// Show the popover positioned next to the tray icon, unconditionally. Used by
+/// the menu "Open" item (which, unlike a tray click, has no blur to debounce).
+fn show_popover(app: &AppHandle) {
+    let Some(popover) = app.get_webview_window("popover") else {
+        return;
+    };
+    let _ = popover.move_window(Position::TrayCenter);
+    let _ = popover.show();
+    let _ = popover.set_focus();
 }
 
 /// Background poll loop: sleeps `poll_interval_secs`, then emits a `dashboard`

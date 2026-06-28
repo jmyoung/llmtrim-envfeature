@@ -446,7 +446,12 @@ fn main() {
 /// Load a fresh dashboard snapshot from the ledger.
 fn load_dashboard(poll_secs: u64) -> anyhow::Result<Dashboard> {
     let path = db_path().context("could not resolve ledger path")?;
-    let db = BreakdownDb::open_readonly(&path).context("could not open ledger")?;
+    let now = chrono::Utc::now().to_rfc3339();
+    // No ledger yet (proxy never ran) is the empty state, not an error.
+    let Some(db) = BreakdownDb::open_readonly_if_ready(&path).context("could not open ledger")?
+    else {
+        return Ok(build_dashboard(Vec::new(), HashMap::new(), now, poll_secs));
+    };
     let aggregates = db
         .agent_aggregates()
         .context("agent_aggregates query failed")?;
@@ -460,7 +465,6 @@ fn load_dashboard(poll_secs: u64) -> anyhow::Result<Dashboard> {
             trend.into_iter().map(|b| b.saved_pct).collect(),
         );
     }
-    let now = chrono::Utc::now().to_rfc3339();
     Ok(build_dashboard(aggregates, trends, now, poll_secs))
 }
 

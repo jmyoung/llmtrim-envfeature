@@ -125,6 +125,24 @@ impl BreakdownDb {
         Ok(Self::from_connection(conn))
     }
 
+    /// Open read-only, returning `None` when the ledger isn't initialised yet.
+    ///
+    /// A first-run machine has either no ledger file at all or a file without the
+    /// `breakdown_turns` table (the proxy, the sole writer, has never run). That's
+    /// the empty state, not an error, so the tray can render "No activity yet"
+    /// instead of failing the poll. A genuine IO error still propagates.
+    pub fn open_readonly_if_ready(path: &Path) -> Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        match Self::open_readonly(path) {
+            Ok(db) => Ok(Some(db)),
+            // Keyed on the same marker `sanitise_error` uses: the table is absent.
+            Err(e) if e.to_string().contains("breakdown_turns") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Per-agent aggregates from `breakdown_turns`, newest activity first.
     ///
     /// Groups by `agent` only — `project` and `session_name` are deliberately
@@ -832,6 +850,35 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("breakdown_turns"), "msg={msg}");
         assert!(!msg.contains('/'), "bail message leaked a path: {msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_readonly_if_ready_is_none_for_uninitialised_ledger() {
+        // Missing file -> None (first run, proxy never started).
+        let missing =
+            std::env::temp_dir().join(format!("llmtrim_absent_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&missing);
+        assert!(
+            BreakdownDb::open_readonly_if_ready(&missing)
+                .expect("missing file is the empty state, not an error")
+                .is_none()
+        );
+
+        // File present but no breakdown_turns table -> also None.
+        let dir = std::env::temp_dir().join(format!("llmtrim_ready_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir temp");
+        let path = dir.join("empty.db");
+        rusqlite::Connection::open(&path)
+            .expect("create empty db")
+            .execute_batch("PRAGMA user_version = 0;")
+            .expect("touch db");
+        assert!(
+            BreakdownDb::open_readonly_if_ready(&path)
+                .expect("schema-less ledger is the empty state")
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

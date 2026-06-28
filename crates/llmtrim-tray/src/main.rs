@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use llmtrim_ledger::breakdown_db::BreakdownDb;
-use llmtrim_ledger::dashboard::{Dashboard, build_dashboard};
+use llmtrim_ledger::dashboard::{Dashboard, build_dashboard, parse_period, sanitise_error};
 use llmtrim_ledger::tracking::{Period, db_path};
 use tauri::image::Image;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -56,7 +56,10 @@ impl Default for TrayState {
 
 /// Lock the state recovering from a poisoned mutex instead of panicking — a
 /// panic in one path must not take down every later IPC call (no `.unwrap()`
-/// in production, per project rules).
+/// in production, per project rules). Recovering the inner value is safe here:
+/// the only state is `poll_interval_secs` and `last_dismiss`, so the worst case
+/// after a poisoning panic is a stale interval or dismiss timestamp, never a
+/// corrupt invariant.
 fn lock_state(state: &Mutex<TrayState>) -> MutexGuard<'_, TrayState> {
     state
         .lock()
@@ -257,39 +260,6 @@ fn load_dashboard(poll_secs: u64) -> anyhow::Result<Dashboard> {
     Ok(build_dashboard(aggregates, trends, now, poll_secs))
 }
 
-/// Strip filesystem paths from error messages before they cross the Tauri
-/// IPC boundary into the webview.  The full error chain is logged to stderr.
-///
-/// We return a short category string rather than the raw anyhow chain, which
-/// avoids any risk of absolute paths (from `db_path()` or `open_readonly()`)
-/// reaching the JS layer.
-fn sanitise_error(e: &anyhow::Error) -> String {
-    let msg = format!("{e}").to_ascii_lowercase();
-    // Classify by key phrase; keep the message short and path-free.
-    if msg.contains("breakdown_turns") {
-        "ledger not initialised — start the llmtrim proxy first".to_string()
-    } else if msg.contains("no such file")
-        || msg.contains("open_readonly")
-        || msg.contains("open ledger")
-    {
-        "ledger file not found — start the llmtrim proxy first".to_string()
-    } else if msg.contains("resolve ledger path") || msg.contains("home") {
-        "could not resolve ledger path — set HOME or LLMTRIM_DB_PATH".to_string()
-    } else {
-        "failed to load dashboard data".to_string()
-    }
-}
-
-/// Parse a period string into the `Period` enum.
-fn parse_period(s: &str) -> anyhow::Result<Period> {
-    match s.to_ascii_lowercase().as_str() {
-        "day" => Ok(Period::Day),
-        "week" => Ok(Period::Week),
-        "month" => Ok(Period::Month),
-        other => anyhow::bail!("unrecognised period {other:?}; expected day, week, or month"),
-    }
-}
-
 /// Toggle the popover window: show (positioned at TrayCenter) or hide.
 /// Includes a short debounce so a tray click while the window is closing
 /// doesn't re-open it immediately.
@@ -326,7 +296,7 @@ fn poll_loop(app: AppHandle, stop: Arc<AtomicBool>) {
 
         // Sleep in short ticks so a quit is observed within ~POLL_TICK rather
         // than after a full (possibly 30s) interval. A mid-sleep change to the
-        // interval also takes effect on the next tick.
+        // interval also takes effect on the next cycle.
         let mut elapsed = Duration::ZERO;
         let target = Duration::from_secs(secs);
         while elapsed < target {

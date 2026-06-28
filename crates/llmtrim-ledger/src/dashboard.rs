@@ -116,9 +116,10 @@ impl BreakdownDb {
             )
             .context("failed to check ledger schema")?;
         if count == 0 {
+            // No path in the message: it crosses into the webview via
+            // `sanitise_error`, which keys on "breakdown_turns".
             anyhow::bail!(
-                "ledger at {} has no breakdown_turns table — run the proxy first to initialise the schema",
-                path.display()
+                "ledger has no breakdown_turns table — run the proxy first to initialise the schema"
             );
         }
         Ok(Self::from_connection(conn))
@@ -235,10 +236,9 @@ fn title_case(s: &str) -> String {
         .filter(|w| !w.is_empty())
         .map(|word| {
             let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            }
+            // The filter above guarantees every segment has at least one char.
+            let first = chars.next().expect("non-empty segment");
+            first.to_uppercase().collect::<String>() + chars.as_str()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -250,6 +250,38 @@ fn gross_saved_pct(before: i64, after: i64) -> f64 {
         0.0
     } else {
         (before - after).max(0) as f64 / before as f64 * 100.0
+    }
+}
+
+/// Map a ledger error to a short, path-free message safe to show in the webview.
+///
+/// SECURITY: the returned string is always a fixed category, never the input
+/// error text, so a filesystem path in `e` can never reach the JS layer. Callers
+/// log the full chain (`{e:#}`) to stderr; this only classifies it for the UI.
+pub fn sanitise_error(e: &anyhow::Error) -> String {
+    let msg = e.to_string().to_ascii_lowercase();
+    // Classify by key phrase; keep the message short and path-free.
+    if msg.contains("breakdown_turns") {
+        "ledger not initialised — start the llmtrim proxy first".to_string()
+    } else if msg.contains("no such file")
+        || msg.contains("open_readonly")
+        || msg.contains("open ledger")
+    {
+        "ledger file not found — start the llmtrim proxy first".to_string()
+    } else if msg.contains("resolve ledger path") {
+        "could not resolve ledger path — set HOME or LLMTRIM_DB_PATH".to_string()
+    } else {
+        "failed to load dashboard data".to_string()
+    }
+}
+
+/// Parse a period string ("day", "week", or "month", case-insensitive) into `Period`.
+pub fn parse_period(s: &str) -> Result<Period> {
+    match s.to_ascii_lowercase().as_str() {
+        "day" => Ok(Period::Day),
+        "week" => Ok(Period::Week),
+        "month" => Ok(Period::Month),
+        other => anyhow::bail!("unrecognised period {other:?}; expected day, week, or month"),
     }
 }
 
@@ -725,5 +757,82 @@ mod tests {
         );
         let json = serde_json::to_string_pretty(&dash).expect("serialize");
         insta::assert_snapshot!(json);
+    }
+
+    // --- parse_period ---
+
+    #[test]
+    fn parse_period_accepts_all_variants_case_insensitively() {
+        assert!(matches!(parse_period("day"), Ok(Period::Day)));
+        assert!(matches!(parse_period("WEEK"), Ok(Period::Week)));
+        assert!(matches!(parse_period("Month"), Ok(Period::Month)));
+    }
+
+    #[test]
+    fn parse_period_rejects_unknown() {
+        let err = parse_period("year").expect_err("year is not a period");
+        assert!(err.to_string().contains("year"), "msg={err}");
+    }
+
+    // --- sanitise_error: every branch is path-free and classified correctly ---
+
+    #[test]
+    fn sanitise_error_classifies_each_branch() {
+        let cases = [
+            (
+                anyhow::anyhow!("ledger has no breakdown_turns table — run the proxy first"),
+                "ledger not initialised — start the llmtrim proxy first",
+            ),
+            (
+                anyhow::anyhow!("failed to open ledger read-only at /home/u/.local/x.db"),
+                "ledger file not found — start the llmtrim proxy first",
+            ),
+            (
+                anyhow::anyhow!("could not resolve ledger path"),
+                "could not resolve ledger path — set HOME or LLMTRIM_DB_PATH",
+            ),
+            (
+                anyhow::anyhow!("disk I/O error reading page 42"),
+                "failed to load dashboard data",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(sanitise_error(&input), expected, "input={input}");
+        }
+    }
+
+    #[test]
+    fn sanitise_error_never_echoes_a_filesystem_path() {
+        // Even when the source error embeds an absolute path, the returned
+        // category string must not contain it.
+        let e = anyhow::anyhow!("failed to open ledger read-only at /secret/home/user/x.db");
+        let out = sanitise_error(&e);
+        assert!(!out.contains('/'), "leaked path: {out}");
+        assert!(!out.contains("secret"), "leaked path: {out}");
+    }
+
+    // --- open_readonly: missing-table bail is path-free and explains the fix ---
+
+    #[test]
+    fn open_readonly_bails_on_missing_breakdown_turns_table() {
+        // Create an empty SQLite file (no breakdown_turns table), then open it
+        // read-only. No tempfile crate: mirror the temp_dir + pid pattern in
+        // tracking.rs's file-ledger test.
+        let dir = std::env::temp_dir().join(format!("llmtrim_ro_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir temp");
+        let path = dir.join("empty.db");
+        rusqlite::Connection::open(&path)
+            .expect("create empty db")
+            .execute_batch("PRAGMA user_version = 0;")
+            .expect("touch db");
+
+        let err = BreakdownDb::open_readonly(&path)
+            .err()
+            .expect("must reject schema-less ledger");
+        let msg = err.to_string();
+        assert!(msg.contains("breakdown_turns"), "msg={msg}");
+        assert!(!msg.contains('/'), "bail message leaked a path: {msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

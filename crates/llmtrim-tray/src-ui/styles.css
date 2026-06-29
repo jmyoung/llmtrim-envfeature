@@ -610,6 +610,22 @@ body {
   gap: 6px;
 }
 
+/* Title/hint on the left, a control (e.g. the interval selector) on the right. */
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* The Quit group is a bare button, no card chrome, sized to its content. */
+.set-group-quit {
+  border: none;
+  background: none;
+  padding: 0;
+  align-items: flex-start;
+}
+
 .row-text {
   display: flex;
   flex-direction: column;

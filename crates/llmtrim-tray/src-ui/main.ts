@@ -86,14 +86,13 @@ quitBtn.addEventListener("click", () => void invoke("quit"));
 
 const footer = el("footer", { class: "footer" }, [
   countdown,
-  el("div", { class: "footer-controls" }, [
-    intervalSelect,
-    settingsBtn,
-    quitBtn,
-  ]),
+  el("div", { class: "footer-controls" }, [settingsBtn]),
 ]);
 
-const settingsView = createSettingsView(closeSettings);
+// The interval selector and Quit live in Settings; the footer keeps only the
+// countdown and the gear. Both nodes are built here so `applyDashboard` can keep
+// the selector in sync and the quit handler stays in one place.
+const settingsView = createSettingsView(closeSettings, { intervalSelect, quitBtn });
 
 app.append(header, list, footer, settingsView.root);
 

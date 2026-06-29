@@ -13,6 +13,14 @@ export interface SettingsView {
   refresh(): Promise<void>;
 }
 
+/** Controls built in main.ts (so the dashboard can keep them in sync) but shown here. */
+export interface SettingsExtras {
+  /** Refresh-interval selector; its change handler lives in main.ts. */
+  intervalSelect: HTMLSelectElement;
+  /** Quit button; its click handler lives in main.ts. */
+  quitBtn: HTMLElement;
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function backIcon(): SVGSVGElement {
@@ -39,12 +47,83 @@ function errorMessage(e: unknown): string {
   return "Unexpected error.";
 }
 
+/** One labelled on/off switch wired to a get/set Tauri command pair. */
+interface Toggle {
+  group: HTMLElement;
+  /** Re-read the backend state into the switch. */
+  refresh(): Promise<void>;
+}
+
+function makeToggle(
+  id: string,
+  title: string,
+  hint: string,
+  getCmd: string,
+  setCmd: string,
+): Toggle {
+  const input = el("input", {
+    class: "switch-input",
+    type: "checkbox",
+    id,
+    role: "switch",
+  }) as HTMLInputElement;
+
+  const knob = el("span", { class: "switch-track", "aria-hidden": "true" }, [
+    el("span", { class: "switch-thumb" }),
+  ]);
+
+  const label = el("label", { class: "switch", for: id }, [
+    el("span", { class: "row-text" }, [
+      el("span", { class: "row-title" }, [title]),
+      el("span", { class: "row-hint" }, [hint]),
+    ]),
+    input,
+    knob,
+  ]);
+
+  const error = el("p", { class: "row-error", role: "alert" });
+  error.hidden = true;
+
+  input.addEventListener("change", () => {
+    const enable = input.checked;
+    input.disabled = true;
+    error.hidden = true;
+    void invoke(setCmd, { enable })
+      .catch((e: unknown) => {
+        input.checked = !enable; // revert
+        error.textContent = errorMessage(e);
+        error.hidden = false;
+      })
+      .finally(() => {
+        input.disabled = false;
+      });
+  });
+
+  const group = el("section", { class: "set-group" }, [label, error]);
+
+  async function refresh(): Promise<void> {
+    error.hidden = true;
+    try {
+      input.checked = await invoke<boolean>(getCmd);
+    } catch (e) {
+      error.textContent = errorMessage(e);
+      error.hidden = false;
+    }
+  }
+
+  return { group, refresh };
+}
+
 /**
  * Build the settings view.
  *
  * @param onClose Called when the user dismisses the view (Back / Escape).
+ * @param extras Controls owned by main.ts but rendered here (interval, Quit).
  */
-export function createSettingsView(onClose: () => void): SettingsView {
+export function createSettingsView(
+  onClose: () => void,
+  extras: SettingsExtras,
+): SettingsView {
   // --- header: back + title ---
   const back = el(
     "button",
@@ -58,51 +137,21 @@ export function createSettingsView(onClose: () => void): SettingsView {
     el("span", { class: "set-title" }, ["Settings"]),
   ]);
 
-  // --- autostart toggle ---
-  const toggle = el("input", {
-    class: "switch-input",
-    type: "checkbox",
-    id: "set-autostart",
-    role: "switch",
-  }) as HTMLInputElement;
-
-  const knob = el("span", { class: "switch-track", "aria-hidden": "true" }, [
-    el("span", { class: "switch-thumb" }),
-  ]);
-
-  const toggleLabel = el("label", { class: "switch", for: "set-autostart" }, [
-    el("span", { class: "row-text" }, [
-      el("span", { class: "row-title" }, ["Open at login"]),
-      el("span", { class: "row-hint" }, ["Start llmtrim when you sign in."]),
-    ]),
-    toggle,
-    knob,
-  ]);
-
-  const autostartError = el("p", { class: "row-error", role: "alert" });
-  autostartError.hidden = true;
-
-  toggle.addEventListener("change", () => void onAutostartChange());
-
-  async function onAutostartChange(): Promise<void> {
-    const enable = toggle.checked;
-    toggle.disabled = true;
-    autostartError.hidden = true;
-    try {
-      await invoke("set_tray_autostart", { enable });
-    } catch (e) {
-      toggle.checked = !enable; // revert
-      autostartError.textContent = errorMessage(e);
-      autostartError.hidden = false;
-    } finally {
-      toggle.disabled = false;
-    }
-  }
-
-  const autostartGroup = el("section", { class: "set-group" }, [
-    toggleLabel,
-    autostartError,
-  ]);
+  // --- autostart: the proxy and the tray are independent login items ---
+  const proxyAutostart = makeToggle(
+    "set-proxy-autostart",
+    "Start proxy at login",
+    "Run the llmtrim proxy when you sign in.",
+    "get_proxy_autostart",
+    "set_proxy_autostart",
+  );
+  const trayAutostart = makeToggle(
+    "set-tray-autostart",
+    "Open tray at login",
+    "Show this tray app when you sign in.",
+    "get_tray_autostart",
+    "set_tray_autostart",
+  );
 
   // --- proxy controls ---
   const proxyStatus = el("p", { class: "row-status", "aria-live": "polite" });
@@ -155,7 +204,29 @@ export function createSettingsView(onClose: () => void): SettingsView {
     proxyStatus,
   ]);
 
-  const body = el("div", { class: "set-body" }, [autostartGroup, proxyGroup]);
+  // --- general: refresh interval (selector built in main.ts) ---
+  const intervalGroup = el("section", { class: "set-group" }, [
+    el("div", { class: "set-row" }, [
+      el("span", { class: "row-text" }, [
+        el("span", { class: "row-title" }, ["Refresh interval"]),
+        el("span", { class: "row-hint" }, ["How often the savings update."]),
+      ]),
+      extras.intervalSelect,
+    ]),
+  ]);
+
+  // --- quit (button built in main.ts) ---
+  const quitGroup = el("section", { class: "set-group set-group-quit" }, [
+    extras.quitBtn,
+  ]);
+
+  const body = el("div", { class: "set-body" }, [
+    proxyGroup,
+    proxyAutostart.group,
+    trayAutostart.group,
+    intervalGroup,
+    quitGroup,
+  ]);
 
   const root = el("section", { class: "settings", "aria-label": "Settings" }, [
     head,
@@ -168,15 +239,8 @@ export function createSettingsView(onClose: () => void): SettingsView {
   });
 
   async function refresh(): Promise<void> {
-    autostartError.hidden = true;
     proxyStatus.hidden = true;
-    try {
-      const on = await invoke<boolean>("get_tray_autostart");
-      toggle.checked = on;
-    } catch (e) {
-      autostartError.textContent = errorMessage(e);
-      autostartError.hidden = false;
-    }
+    await Promise.all([proxyAutostart.refresh(), trayAutostart.refresh()]);
   }
 
   return { root, refresh };

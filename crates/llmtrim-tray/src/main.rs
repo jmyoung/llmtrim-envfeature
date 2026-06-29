@@ -257,6 +257,31 @@ fn set_tray_autostart(enable: bool) -> Result<(), String> {
     }
 }
 
+/// Whether the proxy is set to run at login. Separate login item from the tray's
+/// (`autostart` vs `autostart --tray`); any failure reads as "off".
+#[tauri::command]
+fn get_proxy_autostart() -> bool {
+    let bin = llmtrim_binary();
+    std::process::Command::new(&bin)
+        .args(["autostart", "--status"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled")
+        .unwrap_or(false)
+}
+
+/// Enable or disable running the proxy at login. Omitting `--port` reuses the
+/// port the interceptor already uses.
+#[tauri::command]
+fn set_proxy_autostart(enable: bool) -> Result<(), String> {
+    if enable {
+        run_llmtrim(&["autostart"])
+    } else {
+        run_llmtrim(&["autostart", "--off"])
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Application setup
 // ---------------------------------------------------------------------------
@@ -426,6 +451,8 @@ fn main() {
             stop_proxy,
             get_tray_autostart,
             set_tray_autostart,
+            get_proxy_autostart,
+            set_proxy_autostart,
             quit,
         ])
         .build(tauri::generate_context!())

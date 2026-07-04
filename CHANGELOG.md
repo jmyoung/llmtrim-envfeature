@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **A desktop tray app shows per-agent savings at a glance.** A menu-bar (macOS),
+  system-tray (Windows), or AppIndicator (Linux) popover reports llmtrim's aggregate
+  compression savings, a per-agent breakdown, and a savings trend, refreshed on a
+  configurable interval. It reads the same ledger the proxy writes and exposes only
+  aggregate numbers. Start and stop the proxy and enable launch-at-login from the
+  tray or from the CLI (`llmtrim tray`, `llmtrim setup`). Launching it again (from the
+  dashboard, the CLI, or autostart) focuses the running instance instead of opening a
+  second icon. It ships in the Homebrew,
+  Scoop, and npm packages alongside the CLI; the Linux build is a separate download
+  on the GitHub Release and needs `libwebkit2gtk-4.1` and `libayatana-appindicator3`.
+- **`llmtrim setup` offers to install the tray** and to enable launch-at-login for it.
+- **`llmtrim start` points you at the tray once.** After an update lands the tray next to
+  the CLI, the first start prints a one-time hint to run `llmtrim tray`. Installs without
+  the tray binary (a plain `cargo install`) stay silent.
+- **The `llmtrim status` dashboard opens the tray with `y`.** When the tray is installed, the
+  live dashboard shows a `y tray` action (in the footer and the `?` help) that launches it in
+  the background while the dashboard stays open.
+
 ### Fixed
 - **Codex CLI with ChatGPT sign-in is now compressed and tracked.** It posts to `chatgpt.com`, which was missing from the intercept set, so its traffic passed through the proxy untouched and never showed up in `llmtrim status` (#101).
 

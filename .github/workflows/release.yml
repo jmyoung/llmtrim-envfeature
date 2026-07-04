@@ -284,11 +284,38 @@ jobs:
               echo "waiting for $crate $V on the index (attempt $i)"; sleep 30
             done
           }
-          cargo publish -p llmtrim-core
-          wait_for_index llmtrim-core ll/mt/llmtrim-core
-          cargo publish -p llmtrim-ledger
-          wait_for_index llmtrim-ledger ll/mt/llmtrim-ledger
-          cargo publish -p llmtrim
+          # True only when version $V is live (published AND not yanked) on the sparse index.
+          # Matches the exact `vers` and requires `yanked == false` via jq, so a yanked entry
+          # counts as absent (a yanked version can't be re-published, so a real publish attempt
+          # would then fail loudly rather than silently ship against a gone dependency). Retries
+          # to ride out the index CDN cache (cache-control max-age=600) instead of concluding
+          # "absent" on a single transient read.
+          is_live_on_index() {
+            local path="$1"
+            for i in 1 2 3; do
+              if curl -fsSL "https://index.crates.io/$path" 2>/dev/null \
+                   | jq -e --arg v "$V" 'select(.vers == $v and (.yanked | not))' >/dev/null; then
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          # Idempotent publish: skip a crate whose version is already live on the index. A re-run
+          # after a partial failure, or a locally bootstrapped first publish of a new crate
+          # (crates.io has no pending trusted publishers, so a brand-new crate's first publish
+          # is a manual token publish), is then a no-op instead of an "already exists" error.
+          publish_if_absent() {
+            local crate="$1" path="$2"
+            if is_live_on_index "$path"; then
+              echo "$crate $V already live on the index; skipping publish"; return 0
+            fi
+            cargo publish -p "$crate"
+            wait_for_index "$crate" "$path"
+          }
+          publish_if_absent llmtrim-core ll/mt/llmtrim-core
+          publish_if_absent llmtrim-ledger ll/mt/llmtrim-ledger
+          publish_if_absent llmtrim ll/mt/llmtrim
 
   # Multi-arch proxy image on GHCR from the released (attested) binaries — not rebuilt.
   # amd64 ← x86_64-musl (fully static), arm64 ← aarch64-gnu (distroless cc has glibc).

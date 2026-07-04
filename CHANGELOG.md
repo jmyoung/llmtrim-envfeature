@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
   live dashboard shows a `y tray` action (in the footer and the `?` help) that launches it in
   the background while the dashboard stays open.
 
+### Fixed
+- **Codex CLI with ChatGPT sign-in is now compressed and tracked.** It posts to `chatgpt.com`, which was missing from the intercept set, so its traffic passed through the proxy untouched and never showed up in `llmtrim status` (#101).
+
 ## [0.5.0] - 2026-06-29
 
 ### Added

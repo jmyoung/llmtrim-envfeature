@@ -16,6 +16,9 @@ All notable changes to this project are documented here. The format follows
   Scoop, and npm packages alongside the CLI; the Linux build is a separate download
   on the GitHub Release and needs `libwebkit2gtk-4.1` and `libayatana-appindicator3`.
 - **`llmtrim setup` offers to install the tray** and to enable launch-at-login for it.
+- **`llmtrim start` points you at the tray once.** After an update lands the tray next to
+  the CLI, the first start prints a one-time hint to run `llmtrim tray`. Installs without
+  the tray binary (a plain `cargo install`) stay silent.
 
 ### Changed
 - **`llmtrim status` opens the live dashboard directly on a TTY.** The `--watch` flag is now a hidden no-op, kept so existing scripts keep working.

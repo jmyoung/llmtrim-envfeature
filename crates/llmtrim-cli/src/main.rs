@@ -684,6 +684,11 @@ fn run() -> Result<()> {
                     );
                 }
             }
+            // Once-only pointer to the desktop tray, for users who updated into a
+            // bundle that now ships it (silent on cargo-only installs).
+            if let Some(msg) = llmtrim::tray::nudge_once() {
+                println!("{}", ui::paint(color, Tone::Dim, &msg));
+            }
         }
         Commands::Wrap { args } => llmtrim::wrap::run(args)?,
         Commands::Stop => match llmtrim::daemon::stop()? {

@@ -52,6 +52,37 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Marker recording that the one-time "desktop tray is available" hint has been
+/// shown, so it appears at most once per install.
+const NUDGE_MARKER: &str = "tray-nudged";
+
+/// One-time discoverability hint for the desktop tray, meant to print after the
+/// interceptor starts. Returns the message to show, or `None` when there's
+/// nothing to say: the tray binary isn't installed next to the CLI (a
+/// cargo-only install that can't run it stays quiet), or the hint was already
+/// shown once. Best-effort — a failure to record the marker is never surfaced;
+/// at worst the hint repeats.
+pub fn nudge_once() -> Option<String> {
+    let dir = crate::daemon::home_dir().ok()?;
+    nudge_in(&dir, tray_binary().is_some())
+}
+
+/// Inner seam for [`nudge_once`], tested with a temp dir: given the state
+/// directory and whether the tray is installed, decide whether to show the hint
+/// and record that it was shown.
+fn nudge_in(state_dir: &Path, tray_present: bool) -> Option<String> {
+    if !tray_present {
+        return None;
+    }
+    let marker = state_dir.join(NUDGE_MARKER);
+    if marker.exists() {
+        return None;
+    }
+    let _ = std::fs::create_dir_all(state_dir);
+    let _ = std::fs::write(&marker, b"1\n");
+    Some("Desktop tray available: run `llmtrim tray` to watch savings in your menu bar.".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +125,23 @@ mod tests {
         let dir = TempDir::new("dir-named-bin");
         std::fs::create_dir_all(dir.path().join(TRAY_BIN)).expect("create dir");
         assert!(resolve_tray_binary(dir.path()).is_none());
+    }
+
+    #[test]
+    fn nudge_stays_quiet_when_tray_not_installed() {
+        let dir = TempDir::new("nudge-absent");
+        assert!(nudge_in(dir.path(), false).is_none());
+        // Nothing recorded, so a cargo-only user never accretes a stray marker.
+        assert!(!dir.path().join(NUDGE_MARKER).exists());
+    }
+
+    #[test]
+    fn nudge_shows_once_then_goes_silent() {
+        let dir = TempDir::new("nudge-once");
+        let first = nudge_in(dir.path(), true);
+        assert!(first.is_some_and(|m| m.contains("llmtrim tray")));
+        assert!(dir.path().join(NUDGE_MARKER).exists());
+        // Second call sees the marker and says nothing.
+        assert!(nudge_in(dir.path(), true).is_none());
     }
 }

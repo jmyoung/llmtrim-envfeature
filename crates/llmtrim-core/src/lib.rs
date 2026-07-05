@@ -39,6 +39,7 @@ use serde_json::Value;
 
 pub mod attribution;
 pub mod cache_zone;
+pub(crate) mod capability;
 pub mod config;
 pub mod gate;
 pub mod ir;
@@ -176,12 +177,14 @@ fn stages_for(_provider: ProviderKind, config: &config::DenseConfig) -> Vec<Box<
         }));
     }
     // Stage F (output-side): request-shaping output controls (terse / Chain-of-Draft / budget).
-    if config.output_control || config.output_compact_code {
+    if config.output_control || config.output_compact_code || config.output_frugal_tools {
         stages.push(Box::new(stages::OutputControlStage {
+            output_control: config.output_control,
             level: stages::output::OutputLevel::parse(&config.output_level),
             max_tokens: config.output_max_tokens,
             token_budget: config.output_token_budget,
             compact_code: config.output_compact_code,
+            frugal_tools: config.output_frugal_tools,
         }));
     }
     // Stage A (lossless, latent payoff): mark the final prefix for provider caching.
@@ -249,6 +252,19 @@ pub fn compress_with_config(
     provider: Option<ProviderKind>,
     config: &config::DenseConfig,
 ) -> Result<CompressResult> {
+    compress_with_config_model(input, provider, config, None)
+}
+
+/// Like [`compress_with_config`], but with an out-of-band model id for providers that don't
+/// carry it in the body (Gemini puts the model in the URL path). The override feeds only the
+/// model-capability gate; it is not serialized and does not change
+/// [`CompressResult::model`], so pricing and tokenizer selection are unaffected.
+pub fn compress_with_config_model(
+    input: &str,
+    provider: Option<ProviderKind>,
+    config: &config::DenseConfig,
+    model_override: Option<&str>,
+) -> Result<CompressResult> {
     let value: Value = serde_json::from_str(input).context("request body is not valid JSON")?;
     let kind = match provider {
         Some(k) => k,
@@ -264,6 +280,7 @@ pub fn compress_with_config(
     let counter = tokenizer::counter_for(kind, model.as_deref())?;
     let adapter = provider::for_kind(kind);
     let mut req = Request::from_value(kind, value);
+    req.set_model_hint(model_override);
 
     // `auto` resolves the preset from the request shape (structural, zero-model).
     let routed;
@@ -401,10 +418,16 @@ mod tests {
     #[test]
     fn auto_routes_at_compress_time() {
         use serde_json::json;
-        // auto on a tools request → agent preset → its long description gets trimmed.
+        // auto on a tools request → agent preset → its long description gets trimmed. Use a
+        // realistic varied description (not a single repeated char, which BPE collapses to a few
+        // tokens): the 300-char trim then saves far more than the agent preset's first-turn
+        // frugality directive adds, so the net token delta stays negative.
+        let desc = "This tool searches the project for the given pattern and returns matching \
+                    lines with their file paths and line numbers so the caller can navigate. "
+            .repeat(6);
         let input = json!({"model":"gpt-4o",
             "messages":[{"role":"user","content":"hi"}],
-            "tools":[{"type":"function","function":{"name":"f","description":"x".repeat(500)}}]})
+            "tools":[{"type":"function","function":{"name":"f","description":desc}}]})
         .to_string();
         let r = compress_with_config(
             &input,

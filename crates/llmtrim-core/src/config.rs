@@ -49,6 +49,10 @@ pub struct DenseConfig {
     pub output_token_budget: Option<u64>,
     /// Stage F — instruct the model to emit minified code (arXiv:2508.13666; model-gated).
     pub output_compact_code: bool,
+    /// Stage F — inject the agent-loop frugality directive on tool-call-shaped requests
+    /// (steer trajectory toward info-per-call). Opt-in, model-gated; not in any preset until
+    /// a full agent bench confirms it.
+    pub output_frugal_tools: bool,
     /// Stage D — also encode uniform arrays nested inside content JSON, not only
     /// when the whole content is an array.
     pub serialize_nested: bool,
@@ -212,6 +216,7 @@ impl DenseConfig {
             output_level: "terse".to_string(),
             output_token_budget: None,
             output_compact_code: false,
+            output_frugal_tools: false,
             serialize_nested: true,
             serialize_csv: false,
             serialize_flatten: false,
@@ -338,6 +343,11 @@ impl DenseConfig {
             "safe" | "lossless" => {}
             // Shape-routing meta-preset (resolved per request at compress time).
             "auto" => c.auto = true,
+            // Frugality-only: no input compression, just the agent-loop directive. Isolates
+            // the trajectory effect (info-per-call vs call-count) so a baseline-vs-frugal
+            // agent bench measures the directive alone, not compression. Bench-only until it
+            // proves out on tokens AND task success.
+            "frugal" => c.output_frugal_tools = true,
             // RAG: training-free DSLR sentence pruning with a tight cap (0.35).
             // Bench-confirmed (hotpotqa n=20) to BEAT chunk-level on BOTH axes — cuts
             // more input (50% vs 43%) at less quality loss (−2.0pp vs −7.6pp) — because
@@ -386,6 +396,13 @@ impl DenseConfig {
                 // CI ±5.2 — the n=12 -8pp was noise; see bench/README).
                 c.multimodal = true; // downscale images to the provider cap (see `rag` note)
                 c.strip_base64 = true; // elide base64 blobs (measured +0.0pp, see `rag` note)
+                // Agent-loop frugality directive: fires only on the FIRST tool-call turn of a
+                // task (first-turn-only + idempotent), so it costs ~one ~50-tok injection with no
+                // per-turn cache churn. It's tail insurance, not a median saver — the real-CC A/B
+                // is a median wash but caps the exploration blow-ups (search-heavy loops thrashing
+                // into many narrow probes), with no task-success regression. Model-gated: capable
+                // harnesses batch as asked, weaker ones ignore it harmlessly.
+                c.output_frugal_tools = true;
                 // ngram dropped: ~10–106 tok on agent traffic (bench) for an injected
                 // glossary that mutates the prompt — not worth it. Opt in explicitly.
             }
@@ -944,6 +961,23 @@ mod tests {
             agent.tool_select && agent.tool_trim_desc && agent.tool_minify_schema,
             "agent shrinks the tool block (selection is first-turn-only; trim/minify are cache-stable)"
         );
+    }
+
+    #[test]
+    fn agent_enables_frugal_directive_but_safe_stays_lossless() {
+        // Auto routes tool-call traffic to `agent`, so the agent-loop frugality directive rides
+        // there (first-turn-only tail insurance). `safe`/`lossless` is the clean baseline and must
+        // never carry a behavioral directive — it's the reference the A/B measures against.
+        assert!(
+            DenseConfig::preset("agent").unwrap().output_frugal_tools,
+            "agent (auto tool-call route) enables the frugality directive"
+        );
+        for p in ["safe", "lossless"] {
+            assert!(
+                !DenseConfig::preset(p).unwrap().output_frugal_tools,
+                "{p} stays lossless — no behavioral directive"
+            );
+        }
     }
 
     #[test]

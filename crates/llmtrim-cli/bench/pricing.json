@@ -1,5 +1,5 @@
 {
-"fetched": "2026-07-06",
+"fetched": "2026-07-07",
 "models": {
 "ai21/jamba-large-1.7": {
 "cache_read": 0.0,
@@ -968,8 +968,8 @@
 },
 "meta-llama/llama-3.2-3b-instruct": {
 "cache_read": 0.0,
-"input": 0.0509,
-"output": 0.335
+"input": 0.05,
+"output": 0.33
 },
 "meta-llama/llama-3.2-3b-instruct:free": {
 "cache_read": 0.0,
@@ -1232,7 +1232,7 @@
 "output": 2.5
 },
 "moonshotai/kimi-k2.5": {
-"cache_read": 0.0,
+"cache_read": 0.203,
 "input": 0.375,
 "output": 2.025
 },
@@ -1255,6 +1255,11 @@
 "cache_read": 0.0,
 "input": 0.9,
 "output": 1.9
+},
+"nex-agi/nex-n2-mini": {
+"cache_read": 0.0025,
+"input": 0.025,
+"output": 0.1
 },
 "nex-agi/nex-n2-pro": {
 "cache_read": 0.025,
@@ -1992,7 +1997,7 @@
 "output": 1
 },
 "qwen/qwen3.5-397b-a17b": {
-"cache_read": 0.0,
+"cache_read": 0.111,
 "input": 0.385,
 "output": 2.45
 },
@@ -2116,10 +2121,20 @@
 "input": 0.14,
 "output": 0.57
 },
+"tencent/hy3": {
+"cache_read": 0.035,
+"input": 0.14,
+"output": 0.58
+},
 "tencent/hy3-preview": {
 "cache_read": 0.021,
 "input": 0.063,
 "output": 0.21
+},
+"tencent/hy3:free": {
+"cache_read": 0.0,
+"input": 0,
+"output": 0
 },
 "text-embedding-3-large": {
 "cache_read": 0.0,
@@ -2192,7 +2207,7 @@
 "output": 2
 },
 "xiaomi/mimo-v2.5": {
-"cache_read": 0.0,
+"cache_read": 0.028,
 "input": 0.105,
 "output": 0.28
 },
@@ -2252,9 +2267,9 @@
 "output": 3.036
 },
 "z-ai/glm-5.2": {
-"cache_read": 0.1274,
-"input": 0.686,
-"output": 2.156
+"cache_read": 0.16874,
+"input": 0.9086,
+"output": 2.8556
 },
 "z-ai/glm-5v-turbo": {
 "cache_read": 0.24,

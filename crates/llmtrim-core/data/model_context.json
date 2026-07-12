@@ -1,5 +1,5 @@
 {
-"fetched": "2026-07-11",
+"fetched": "2026-07-12",
 "models": {
 "ai21/jamba-large-1.7": 256000,
 "aion-labs/aion-2.0": 131072,
@@ -188,7 +188,6 @@
 "magistral-medium-latest": 128000,
 "magistral-small": 128000,
 "mancer/weaver": 8000,
-"meta-llama/llama-3-8b-instruct": 8192,
 "meta-llama/llama-3.1-70b-instruct": 131072,
 "meta-llama/llama-3.1-8b-instruct": 131072,
 "meta-llama/llama-3.2-11b-vision-instruct": 131072,

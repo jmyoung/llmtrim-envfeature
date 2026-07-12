@@ -1,5 +1,5 @@
 {
-"fetched": "2026-07-11",
+"fetched": "2026-07-12",
 "models": {
 "ai21/jamba-large-1.7": {
 "cache_read": 0.0,
@@ -367,9 +367,9 @@
 "output": 0.41
 },
 "deepseek/deepseek-v4-flash": {
-"cache_read": 0.0168,
-"input": 0.084,
-"output": 0.168
+"cache_read": 0.0154,
+"input": 0.077,
+"output": 0.154
 },
 "deepseek/deepseek-v4-pro": {
 "cache_read": 0.003625,
@@ -961,11 +961,6 @@
 "input": 0.75,
 "output": 1
 },
-"meta-llama/llama-3-8b-instruct": {
-"cache_read": 0.0,
-"input": 0.14,
-"output": 0.14
-},
 "meta-llama/llama-3.1-70b-instruct": {
 "cache_read": 0.0,
 "input": 0.4,
@@ -1262,9 +1257,9 @@
 "output": 3.41
 },
 "moonshotai/kimi-k2.7-code": {
-"cache_read": 0.159,
+"cache_read": 0.15,
 "input": 0.72,
-"output": 3.49
+"output": 3.5
 },
 "morph/morph-v3-fast": {
 "cache_read": 0.0,
@@ -2307,9 +2302,9 @@
 "output": 3.036
 },
 "z-ai/glm-5.2": {
-"cache_read": 0.078,
-"input": 0.42,
-"output": 1.32
+"cache_read": 0.065,
+"input": 0.35,
+"output": 1.1
 },
 "z-ai/glm-5v-turbo": {
 "cache_read": 0.24,

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-12
+
 ### Fixed
 
 - **Status line claimed a reroute that never happened in `sub` fallback mode.** The reroute arrow
@@ -993,7 +995,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/fkiene/llmtrim/compare/v0.9.4...v0.10.0
 [0.9.4]: https://github.com/fkiene/llmtrim/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/fkiene/llmtrim/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/fkiene/llmtrim/compare/v0.9.1...v0.9.2

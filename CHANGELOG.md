@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-12
+
 ### Fixed
 
 - **Low cache reuse on `sub codex` / `sub kimi`.** Follow-up turns now reuse backend state via `previous_response_id` + output transcript, producing the expected high cache hit rates instead of full resends.
@@ -921,7 +923,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/fkiene/llmtrim/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/fkiene/llmtrim/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/fkiene/llmtrim/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/fkiene/llmtrim/compare/v0.9.0...v0.9.1

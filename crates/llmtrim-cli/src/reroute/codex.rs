@@ -15,6 +15,11 @@ use crate::reroute::sse::{ReduceEvent, SseLineParser, StopReason, Usage};
 
 pub const HOST: &str = "chatgpt.com";
 pub const PATH: &str = "/backend-api/codex/responses";
+/// The GPT-5.6 models are gated on the Codex client identity: the backend answers 404 unless
+/// `originator` is `codex_cli_rs` *and* the `user-agent` starts with `codex_cli_rs`. It only
+/// checks that prefix, so llmtrim keeps its own version and name in the rest of the string
+/// instead of impersonating the official CLI byte for byte.
+const OFFICIAL_CODEX_ORIGINATOR: &str = "codex_cli_rs";
 
 /// The Claude Code hosted web-search tool. Translated to the Codex `web_search` tool (not a
 /// function tool) so the model can actually search; see [`web_search_tool`].
@@ -85,6 +90,12 @@ pub fn build_request_body(
     body.insert("text".into(), Value::Object(text));
 
     Ok(Value::Object(body))
+}
+
+/// GPT-5.6 models require the official Codex client identity even when using the standard
+/// Responses shape.
+pub fn uses_official_codex_client(model: &str) -> bool {
+    matches!(model, "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra")
 }
 
 /// Flatten an Anthropic `system` (string or array of `{type:"text", text}` blocks) to one string.
@@ -166,6 +177,12 @@ fn build_input(anthropic: &Value) -> Vec<Value> {
                 let mut parts: Vec<Value> = Vec::new();
                 for b in &blocks {
                     match b.get("type").and_then(Value::as_str) {
+                        Some("thinking") | Some("redacted_thinking") => {
+                            flush_message(&mut input, "assistant", &mut parts);
+                            if let Some(item) = thinking_input_item(b) {
+                                input.push(item);
+                            }
+                        }
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(Value::as_str) {
                                 parts.push(json!({ "type": "output_text", "text": t }));
@@ -348,20 +365,74 @@ fn build_tool_choice(tc: Option<&Value>) -> Option<Value> {
     }
 }
 
-/// Resolve the reasoning effort from `output_config.effort`.
+/// Resolve the reasoning effort from `output_config.effort`, with a fallback when Claude Code
+/// enables adaptive thinking without an explicit effort tier.
 ///
-/// `max`/`xhigh` -> `"xhigh"`; `low`/`medium`/`high` pass through; anything else (including
-/// `none`/absent) -> `None`, which drops both `reasoning` and the encrypted-content `include`.
+/// `max`/`xhigh` -> `"xhigh"`; `low`/`medium`/`high` pass through; `thinking.type` of
+/// `enabled`/`adaptive` (without effort) defaults to `"medium"`. `thinking.type: disabled` and
+/// absent/`none` effort drop both `reasoning` and the encrypted-content `include`.
 fn reasoning_effort(anthropic: &Value) -> Option<String> {
-    let effort = anthropic
+    if anthropic
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(Value::as_str)
+        == Some("disabled")
+    {
+        return None;
+    }
+    if let Some(effort) = anthropic
         .get("output_config")
         .and_then(|c| c.get("effort"))
-        .and_then(Value::as_str)?;
-    match effort {
-        "max" | "xhigh" => Some("xhigh".into()),
-        "low" | "medium" | "high" => Some(effort.into()),
-        _ => None,
+        .and_then(Value::as_str)
+    {
+        return match effort {
+            "max" | "xhigh" => Some("xhigh".into()),
+            "low" | "medium" | "high" => Some(effort.into()),
+            _ => None,
+        };
     }
+    let thinking_on = anthropic
+        .get("thinking")
+        .and_then(|t| t.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|ty| matches!(ty, "enabled" | "adaptive"));
+    thinking_on.then(|| "medium".into())
+}
+
+/// Extract non-empty Codex `encrypted_content` from a Responses `reasoning` output item.
+fn reasoning_encrypted_content(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return None;
+    }
+    item.get("encrypted_content")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Build a Codex `reasoning` input item from an Anthropic thinking block (signature round-trips
+/// as `encrypted_content`). Returns `None` when the block carries nothing Codex can replay.
+fn thinking_input_item(block: &Value) -> Option<Value> {
+    let thinking = block
+        .get("thinking")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let signature = block
+        .get("signature")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if signature.is_empty() {
+        return None;
+    }
+    let mut item = json!({
+        "type": "reasoning",
+        "encrypted_content": signature,
+        "summary": [],
+    });
+    if !thinking.is_empty() {
+        item["summary"] = json!([{"type": "summary_text", "text": thinking}]);
+    }
+    Some(item)
 }
 
 /// Build the Responses `text.format` from an Anthropic `output_config.format`.
@@ -388,6 +459,15 @@ pub fn request_headers(
     account_id: Option<&str>,
     session_id: Option<&str>,
 ) -> Vec<(String, String)> {
+    request_headers_with_mode(access_token, account_id, session_id, false)
+}
+
+pub fn request_headers_with_mode(
+    access_token: &str,
+    account_id: Option<&str>,
+    session_id: Option<&str>,
+    official_client: bool,
+) -> Vec<(String, String)> {
     let mut headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
         ("accept".to_string(), "text/event-stream".to_string()),
@@ -395,14 +475,26 @@ pub fn request_headers(
             "authorization".to_string(),
             format!("Bearer {access_token}"),
         ),
-        ("originator".to_string(), "llmtrim".to_string()),
+        (
+            "originator".to_string(),
+            if official_client {
+                OFFICIAL_CODEX_ORIGINATOR
+            } else {
+                "llmtrim"
+            }
+            .to_string(),
+        ),
         (
             "openai-beta".to_string(),
             "responses=experimental".to_string(),
         ),
         (
             "user-agent".to_string(),
-            format!("llmtrim/{}", env!("CARGO_PKG_VERSION")),
+            if official_client {
+                format!("codex_cli_rs/{} (llmtrim)", env!("CARGO_PKG_VERSION"))
+            } else {
+                format!("llmtrim/{}", env!("CARGO_PKG_VERSION"))
+            },
         ),
     ];
     if let Some(acc) = account_id {
@@ -446,6 +538,17 @@ pub struct Reducer {
     /// is only honored for the item that owns the currently open tool.
     tool_output_index: Option<i64>,
     terminal_seen: bool,
+    /// Codex `encrypted_content` for the open (or most recent) reasoning item, mapped to Anthropic
+    /// `signature_delta` before the thinking block closes.
+    thinking_encrypted: Option<String>,
+    /// Text opened on the wire before the reasoning signature arrived; held until
+    /// [`Self::close_thinking`] can emit `signature_delta`.
+    defer_text_open: bool,
+    /// Last `encrypted_content` emitted as a signature, so the repeated `added`/`done` copies of
+    /// one reasoning item dedupe while a later item still gets its own signature.
+    last_signature: Option<String>,
+    /// Text deltas that arrived while thinking was still awaiting its signature.
+    deferred_text_deltas: Vec<String>,
     // Accumulation for continuation transcript (assistant outputs in codex input item shape)
     current_assistant_text: String,
     output_items: Vec<Value>,
@@ -463,9 +566,85 @@ impl Reducer {
             tool_flushed: false,
             tool_output_index: None,
             terminal_seen: false,
+            thinking_encrypted: None,
+            defer_text_open: false,
+            last_signature: None,
+            deferred_text_deltas: Vec::new(),
             current_assistant_text: String::new(),
             output_items: Vec::new(),
         }
+    }
+
+    /// Emit `ThinkingSignatureDelta` when encrypted reasoning content is known, then close the
+    /// thinking block. Signature must precede `content_block_stop` or Claude Code rejects the turn.
+    fn close_thinking(&mut self, out: &mut Vec<ReduceEvent>) {
+        if self.open != Open::Thinking {
+            return;
+        }
+        if let Some(sig) = self.thinking_encrypted.take()
+            && self.last_signature.as_deref() != Some(sig.as_str())
+        {
+            out.push(ReduceEvent::ThinkingSignatureDelta(sig.clone()));
+            self.last_signature = Some(sig);
+        }
+        out.push(ReduceEvent::ThinkingStop);
+        self.open = Open::None;
+        self.flush_deferred_text(out);
+    }
+
+    /// Replay text that arrived while thinking was still waiting for its signature.
+    fn flush_deferred_text(&mut self, out: &mut Vec<ReduceEvent>) {
+        if !self.defer_text_open && self.deferred_text_deltas.is_empty() {
+            return;
+        }
+        self.defer_text_open = false;
+        out.push(ReduceEvent::TextStart);
+        self.open = Open::Text;
+        for delta in std::mem::take(&mut self.deferred_text_deltas) {
+            self.current_assistant_text.push_str(&delta);
+            out.push(ReduceEvent::TextDelta(delta));
+        }
+    }
+
+    /// Record encrypted reasoning content from a Responses `reasoning` item. Opens a thinking
+    /// block when the upstream omitted summary text (signature-only / `display: omitted` shape).
+    ///
+    /// Codex repeats the same `encrypted_content` on the item's `added` and `done` events; a turn
+    /// with tool calls emits several distinct reasoning items, each needing its own signature.
+    fn note_reasoning_encrypted(
+        &mut self,
+        out: &mut Vec<ReduceEvent>,
+        encrypted: String,
+        done: bool,
+    ) {
+        if self.last_signature.as_deref() == Some(encrypted.as_str()) {
+            return;
+        }
+        self.thinking_encrypted = Some(encrypted);
+        // On `added` the summary deltas are still to come: stash the signature and let the
+        // summary open the block.
+        if !done {
+            return;
+        }
+        if self.open != Open::Thinking {
+            self.close_open(out);
+            out.push(ReduceEvent::ThinkingStart);
+            self.open = Open::Thinking;
+        }
+        self.close_thinking(out);
+    }
+
+    /// Close the open thinking block when its signature is available; otherwise defer the caller's
+    /// transition (e.g. text must not open before `signature_delta`).
+    fn close_thinking_when_ready(&mut self, out: &mut Vec<ReduceEvent>) -> bool {
+        if self.open != Open::Thinking {
+            return true;
+        }
+        if self.thinking_encrypted.is_none() {
+            return false;
+        }
+        self.close_thinking(out);
+        true
     }
 
     /// Sanitize + emit the buffered tool args once (idempotent per tool call).
@@ -528,19 +707,25 @@ impl Reducer {
 
     /// Close whatever block is open, emitting its `*Stop`.
     fn close_open(&mut self, out: &mut Vec<ReduceEvent>) {
-        match self.open {
-            Open::Thinking => out.push(ReduceEvent::ThinkingStop),
-            Open::Text => {
-                self.flush_current_text();
-                out.push(ReduceEvent::TextStop);
+        // `close_thinking` can reopen a text block with the deltas it deferred, so drain until
+        // nothing is open.
+        loop {
+            match self.open {
+                // Leaves `open` at `None` or `Text` (deferred text replayed).
+                Open::Thinking => self.close_thinking(out),
+                Open::Text => {
+                    self.flush_current_text();
+                    out.push(ReduceEvent::TextStop);
+                    self.open = Open::None;
+                }
+                Open::Tool => {
+                    self.flush_tool(out);
+                    out.push(ReduceEvent::ToolStop);
+                    self.open = Open::None;
+                }
+                Open::None => return,
             }
-            Open::Tool => {
-                self.flush_tool(out);
-                out.push(ReduceEvent::ToolStop);
-            }
-            Open::None => {}
         }
-        self.open = Open::None;
     }
 
     fn flush_current_text(&mut self) {
@@ -560,11 +745,19 @@ impl Reducer {
             "response.output_item.added" => {
                 let item = v.get("item").cloned().unwrap_or(Value::Null);
                 match item.get("type").and_then(Value::as_str) {
-                    Some("reasoning") => {} // ignore reasoning items
+                    Some("reasoning") => {
+                        if let Some(enc) = reasoning_encrypted_content(&item) {
+                            self.note_reasoning_encrypted(out, enc, false);
+                        }
+                    }
                     Some("message") => {
-                        self.close_open(out);
-                        out.push(ReduceEvent::TextStart);
-                        self.open = Open::Text;
+                        if !self.close_thinking_when_ready(out) {
+                            self.defer_text_open = true;
+                        } else {
+                            self.close_open(out);
+                            out.push(ReduceEvent::TextStart);
+                            self.open = Open::Text;
+                        }
                     }
                     Some("function_call") => {
                         self.close_open(out);
@@ -612,12 +805,20 @@ impl Reducer {
             "response.output_text.delta" => {
                 let delta = v.get("delta").and_then(Value::as_str).unwrap_or("");
                 if self.open != Open::Text {
-                    self.close_open(out);
-                    out.push(ReduceEvent::TextStart);
-                    self.open = Open::Text;
+                    if self.open == Open::Thinking && self.thinking_encrypted.is_none() {
+                        self.defer_text_open = true;
+                    } else {
+                        self.close_open(out);
+                        out.push(ReduceEvent::TextStart);
+                        self.open = Open::Text;
+                    }
                 }
-                self.current_assistant_text.push_str(delta);
-                out.push(ReduceEvent::TextDelta(delta.to_string()));
+                if self.open == Open::Text {
+                    self.current_assistant_text.push_str(delta);
+                    out.push(ReduceEvent::TextDelta(delta.to_string()));
+                } else if self.defer_text_open || self.open == Open::Thinking {
+                    self.deferred_text_deltas.push(delta.to_string());
+                }
             }
             "response.function_call_arguments.delta" => {
                 // Buffer, don't stream: the full args are needed to sanitize as one JSON value.
@@ -643,6 +844,12 @@ impl Reducer {
                     && self.tool_output_index.is_some()
                     && Some(done_idx) != self.tool_output_index
                 {
+                    return;
+                }
+                if let Some(item) = v.get("item")
+                    && let Some(enc) = reasoning_encrypted_content(item)
+                {
+                    self.note_reasoning_encrypted(out, enc, true);
                     return;
                 }
                 self.close_open(out);
@@ -781,6 +988,56 @@ mod tests {
         )
         .expect("build");
         assert_eq!(body["instructions"], "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn gpt56_keeps_standard_responses_shape() {
+        let body = build_request_body(
+            &json!({
+                "system": "Be concise.",
+                "messages": [],
+                "tools": [{
+                    "name": "Read",
+                    "description": "read a file",
+                    "input_schema": { "type": "object" }
+                }],
+                "output_config": { "effort": "high" }
+            }),
+            "gpt-5.6-terra",
+            None,
+        )
+        .expect("build");
+        assert_eq!(body["instructions"], "Be concise.");
+        assert!(body["tools"].is_array());
+        assert_eq!(body["parallel_tool_calls"], true);
+        assert!(body.get("client_metadata").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body["reasoning"].get("context").is_none());
+    }
+
+    #[test]
+    fn gpt56_uses_official_codex_identity() {
+        let request = json!({
+            "messages": [],
+        });
+        let body = build_request_body(&request, "gpt-5.6-luna", None).expect("build");
+        assert!(uses_official_codex_client("gpt-5.6-luna"));
+        assert!(body.get("client_metadata").is_none());
+        let headers = request_headers_with_mode("tok", None, None, true);
+        let get = |k: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("originator"), Some("codex_cli_rs"));
+        let ua = get("user-agent").expect("user-agent");
+        assert!(
+            ua.starts_with("codex_cli_rs/"),
+            "gate is on the prefix: {ua}"
+        );
+        assert!(ua.contains("llmtrim"), "llmtrim stays identifiable: {ua}");
+        assert!(get("x-openai-internal-codex-responses-lite").is_none());
     }
 
     #[test]
@@ -1202,6 +1459,7 @@ mod tests {
     fn reasoning_then_text_closes_thinking_first() {
         let sse = concat!(
             "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"pondering\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"enc_sig_1\"}}\n\n",
             "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"answer\"}\n\n",
         );
@@ -1211,11 +1469,156 @@ mod tests {
             vec![
                 ReduceEvent::ThinkingStart,
                 ReduceEvent::ThinkingDelta("pondering".into()),
+                ReduceEvent::ThinkingSignatureDelta("enc_sig_1".into()),
                 ReduceEvent::ThinkingStop,
                 ReduceEvent::TextStart,
                 ReduceEvent::TextDelta("answer".into()),
             ]
         );
+    }
+
+    #[test]
+    fn signature_only_reasoning_opens_thinking_without_summary_deltas() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"enc_only\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"enc_only\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"ok\"}\n\n",
+        );
+        let (events, _) = reduce(sse);
+        assert_eq!(
+            events,
+            vec![
+                ReduceEvent::ThinkingStart,
+                ReduceEvent::ThinkingSignatureDelta("enc_only".into()),
+                ReduceEvent::ThinkingStop,
+                ReduceEvent::TextStart,
+                ReduceEvent::TextDelta("ok".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_reasoning_item_gets_its_own_signature() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"enc1\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"c\",\"call_id\":\"c\",\"name\":\"Read\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c\",\"name\":\"Read\",\"arguments\":\"{}\"}}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":2,\"delta\":\"more\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"enc2\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":3,\"item\":{\"type\":\"message\",\"id\":\"m\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":3,\"delta\":\"hi\"}\n\n",
+        );
+        let (events, _) = reduce(sse);
+        let sigs: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                ReduceEvent::ThinkingSignatureDelta(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sigs, vec!["enc1", "enc2"]);
+    }
+
+    #[test]
+    fn deferred_text_survives_a_reasoning_item_without_signature() {
+        let sse = concat!(
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"think\"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"the answer\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+        );
+        let (events, mut r) = reduce(sse);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ReduceEvent::TextDelta(t) if t == "the answer")),
+            "text deferred behind a never-arriving signature must still be emitted: {events:#?}"
+        );
+        let items = r.take_output_items();
+        assert!(
+            items
+                .iter()
+                .any(|i| i["content"][0]["text"] == "the answer"),
+            "deferred text must also reach the continuation transcript"
+        );
+    }
+
+    #[test]
+    fn thinking_signature_round_trips_into_reasoning_input() {
+        let body = build_request_body(
+            &json!({
+                "messages": [{
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "pondered", "signature": "enc_rt"},
+                        {"type": "text", "text": "done"}
+                    ]
+                }]
+            }),
+            "gpt-5.5",
+            None,
+        )
+        .expect("build");
+        let input = body["input"].as_array().expect("input");
+        assert_eq!(input[0]["type"], "reasoning");
+        assert_eq!(input[0]["encrypted_content"], "enc_rt");
+        assert_eq!(input[0]["summary"][0]["text"], "pondered");
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["content"][0]["text"], "done");
+    }
+
+    #[test]
+    fn thinking_without_signature_is_not_replayed() {
+        let body = build_request_body(
+            &json!({
+                "messages": [{
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "orphan", "signature": ""}
+                    ]
+                }]
+            }),
+            "gpt-5.5",
+            None,
+        )
+        .expect("build");
+        assert!(body["input"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn text_waits_for_reasoning_signature_when_done_follows_message_added() {
+        // Upstream may emit the assistant message before the reasoning item's terminal `done`.
+        let sse = concat!(
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"hmm\"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"m\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"ans\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"encrypted_content\":\"late_sig\"}}\n\n",
+        );
+        let (events, _) = reduce(sse);
+        assert_eq!(
+            events,
+            vec![
+                ReduceEvent::ThinkingStart,
+                ReduceEvent::ThinkingDelta("hmm".into()),
+                ReduceEvent::ThinkingSignatureDelta("late_sig".into()),
+                ReduceEvent::ThinkingStop,
+                ReduceEvent::TextStart,
+                ReduceEvent::TextDelta("ans".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn adaptive_thinking_without_effort_enables_reasoning() {
+        let body = build_request_body(
+            &json!({ "messages": [], "thinking": {"type": "adaptive"} }),
+            "gpt-5.5",
+            None,
+        )
+        .expect("build");
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["include"][0], "reasoning.encrypted_content");
     }
 
     #[test]

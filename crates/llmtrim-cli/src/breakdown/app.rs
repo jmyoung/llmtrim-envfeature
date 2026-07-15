@@ -335,10 +335,16 @@ pub enum PostAction {
     None,
     /// `d` — run `llmtrim doctor` (repair check).
     Doctor,
+    /// `f` — run `llmtrim ensure` (apply recommended integration fixes).
+    Fix,
     /// `u` — run `llmtrim update` (a newer release is available).
     Update,
     /// `u` on a stale daemon — restart it (`llmtrim start --force`) to load the new binary.
     Restart,
+    /// One-time sub onboarding: print login instructions.
+    SubLogin,
+    /// Dismiss the one-time sub onboarding nudge permanently.
+    SubDismiss,
 }
 
 struct App {
@@ -370,6 +376,10 @@ struct App {
     /// Whether the tray GUI is installed next to the CLI — gates the `y tray` action so the
     /// hint never offers something that can't run. Resolved once at construction.
     tray_available: bool,
+    /// Integrations need attention (statusline/guard/daemon skew…) — gates `f` fix.
+    needs_ensure: bool,
+    /// One-time subscription onboarding on the Overview tab.
+    show_sub_nudge: bool,
 }
 
 impl App {
@@ -391,6 +401,8 @@ impl App {
             detail_req: None,
             action: PostAction::None,
             tray_available: crate::tray::tray_binary().is_some(),
+            needs_ensure: crate::ensure::needs_attention(),
+            show_sub_nudge: crate::ensure::should_show_sub_nudge(),
         }
     }
 
@@ -438,10 +450,14 @@ impl App {
                 palette::cycle();
                 let _ = llmtrim_core::config::save_theme(palette::ident());
             }
-            // `d`/`u` queue a command and quit, so it runs on the normal screen (not inside the
-            // alt-screen): `d` = repair check (doctor), `u` = update.
+            // `d`/`f`/`u` queue a command and quit, so it runs on the normal screen (not inside
+            // the alt-screen): `d` = doctor, `f` = ensure/fix integrations, `u` = update.
             KeyCode::Char('d') => {
                 self.action = PostAction::Doctor;
+                return true;
+            }
+            KeyCode::Char('f') if self.needs_ensure => {
+                self.action = PostAction::Fix;
                 return true;
             }
             KeyCode::Char('u') => {
@@ -456,6 +472,17 @@ impl App {
                 } else {
                     PostAction::Update
                 };
+                return true;
+            }
+            // One-time sub onboarding: `s` = show login steps, `n` = never again.
+            KeyCode::Char('s') if self.show_sub_nudge && self.tab == Tab::Overview => {
+                self.action = PostAction::SubLogin;
+                self.show_sub_nudge = false;
+                return true;
+            }
+            KeyCode::Char('n') if self.show_sub_nudge && self.tab == Tab::Overview => {
+                self.action = PostAction::SubDismiss;
+                self.show_sub_nudge = false;
                 return true;
             }
             // `c` flips the Overview gauge between "% of new content" and "% of the whole prompt"
@@ -704,6 +731,15 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ));
         }
+        // Integrations stale / missing — `f` fixes without reading the changelog.
+        if self.needs_ensure {
+            meta.push(Span::styled(
+                "  ⚠ fix",
+                Style::default()
+                    .fg(palette::warn())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         meta.push(Span::styled(
             format!(
                 " │ {h12}:{m:02}:{s:02} {ampm} │ ↻ {}s",
@@ -835,13 +871,19 @@ impl App {
             Tab::Detail => String::from(" Tab tabs · ⇧Tab pane · ↑↓ move · →/← expand"),
         };
         if problem {
-            keys.push_str(" · d repair");
+            keys.push_str(" · d doctor");
+        }
+        if self.needs_ensure {
+            keys.push_str(" · f fix");
         }
         if update {
             keys.push_str(" · u update");
         }
         if self.tray_available {
             keys.push_str(" · y tray");
+        }
+        if self.show_sub_nudge && self.tab == Tab::Overview {
+            keys.push_str(" · s sub · n dismiss");
         }
         keys.push_str(match self.tab {
             Tab::Overview => " · t theme · ? help · q quit",
@@ -898,6 +940,10 @@ fn render_help_overlay(f: &mut Frame, tray: bool) {
         lines.push(Line::from("  y                  open the desktop tray"));
     }
     lines.extend([
+        Line::from("  f                  fix integrations (ensure)"),
+        Line::from("  d                  doctor (diagnose)"),
+        Line::from("  u                  update / restart stale daemon"),
+        Line::from("  s / n              sub setup / dismiss (when shown)"),
         Line::from(""),
         Line::from("  \"would have cost\" = the price at your provider's"),
         Line::from("   normal rate; \"you paid\" is after llmtrim trimmed it."),

@@ -1,9 +1,10 @@
-//! `llmtrim doctor` — read-only, end-to-end install diagnosis.
+//! `llmtrim doctor` — end-to-end install diagnosis (optionally repairs with `--fix`).
 //!
 //! One pass/fail row per link in the chain (binary → daemon → port → env → CA →
-//! autostart → ledger), each failing row naming its fix. `status` shows the same chain
-//! compressed to a header; doctor is the long form for "it doesn't work, why?".
-//! Gathering is separated from rendering so the row logic is unit-testable.
+//! autostart → ledger → integrations), each failing row naming its fix. `status` shows
+//! the same chain compressed to a header; doctor is the long form for "it doesn't work,
+//! why?". Pass `--fix` to run [`crate::ensure`] first. Gathering is separated from
+//! rendering so the row logic is unit-testable.
 
 use crate::ui;
 
@@ -37,6 +38,8 @@ pub struct State {
     pub log_path: Option<String>,
     /// Newer released version, if the (cached) update check knows one.
     pub update_available: Option<String>,
+    /// Integration gaps from [`crate::ensure::probe`] (label, detail).
+    pub integration_gaps: Vec<(String, String)>,
 }
 
 /// The finished diagnosis: checklist rows + how many are real problems (`⚠` rows;
@@ -97,6 +100,10 @@ pub fn gather() -> Report {
             .ok()
             .map(|p| p.display().to_string()),
         update_available: crate::update::check(false),
+        integration_gaps: crate::ensure::probe()
+            .into_iter()
+            .map(|g| (g.label, g.detail))
+            .collect(),
     };
     build(&state)
 }
@@ -279,6 +286,15 @@ pub fn build(s: &State) -> Report {
         ));
     }
 
+    // Claude Code integrations — gaps are WARN so doctor --fix / ensure is the remedy.
+    for (label, detail) in &s.integration_gaps {
+        rows.push((
+            ui::WARN,
+            label.to_ascii_lowercase(),
+            format!("{detail} — fix: llmtrim ensure"),
+        ));
+    }
+
     let problems = rows.iter().filter(|(g, _, _)| *g == ui::WARN).count();
     Report { rows, problems }
 }
@@ -331,6 +347,7 @@ mod tests {
             last_request: Some("4s ago".into()),
             log_path: Some("/home/u/.llmtrim/serve.log".into()),
             update_available: None,
+            integration_gaps: Vec::new(),
         }
     }
 

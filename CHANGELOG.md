@@ -6,14 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-07-15
-
-### Breaking
-
-- **`SubProvider` / `StreamReducer` gain a `Grok` variant** and are marked `#[non_exhaustive]` so
-  further backends can land without a major bump. External exhaustive `match`es need a `_` arm.
-  Workspace version is **0.11.0** (0.x minor = semver-breaking).
-
 ### Changed
 
 - **Overview and non-TTY status dollars match Sessions (frozen proxy bills).** KPI "You paid" /
@@ -36,6 +28,20 @@ All notable changes to this project are documented here. The format follows
   breakdown bills — banner instead of fake `$0.00`.
 - **`llmtrim-ledger::money`:** shared `MoneyTotals` / coverage / per-day / per-model queries;
   shared `saved_micros` SQL for Overview and Sessions.
+- **Grok remote auth:** paste the callback URL or xAI one-time code into
+  `llmtrim sub auth grok login`, or use RFC 8628 `llmtrim sub auth grok device` for SSH/headless
+  hosts (no localhost callback).
+
+## [0.11.0] - 2026-07-15
+
+### Breaking
+
+- **`SubProvider` / `StreamReducer` gain a `Grok` variant** and are marked `#[non_exhaustive]` so
+  further backends can land without a major bump. External exhaustive `match`es need a `_` arm.
+  Workspace version is **0.11.0** (0.x minor = semver-breaking).
+
+### Added
+
 - **`llmtrim ensure`:** bring this machine to the recommended state. Installs or refreshes owned
   Claude Code integrations (statusline, cold-cache guard, window-local `/sub`, default compact
   model chain), tray login when the GUI binary is present, and restarts a version-skewed daemon.
@@ -52,9 +58,7 @@ All notable changes to this project are documented here. The format follows
   `grok-4.5` (opus/sonnet/fable) and `grok-composer-2.5-fast` (haiku) and routes Claude Code's
   Anthropic `/v1/messages` traffic to `cli-chat-proxy.grok.com/v1/responses`. Tokens live at
   `~/.llmtrim/grok/auth.json`. Works with `sub mode fallback` chains (`codex,kimi,grok`) and the
-  window `/sub` command. Remote / headless machines can finish login by pasting the callback URL
-  or xAI one-time code into `grok login`, or with RFC 8628
-  `llmtrim sub auth grok device` (no localhost callback).
+  window `/sub` command. Device-code login is not available yet (browser only).
 - **Window `/sub on <provider>`.** The Claude Code slash command accepts an explicit backend:
   `/sub on codex`, `/sub on kimi`, or `/sub on grok`. Bare `/sub on` still re-enables the last
   window provider or the global `sub` setting.

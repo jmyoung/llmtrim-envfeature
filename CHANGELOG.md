@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-16
+
 ### Fixed
 
 - **Window `/sub` survives Claude Code `/clear` (and `/compact`) without the env token.**
@@ -1174,7 +1176,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/fkiene/llmtrim/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/fkiene/llmtrim/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/fkiene/llmtrim/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/fkiene/llmtrim/compare/v0.10.1...v0.10.2

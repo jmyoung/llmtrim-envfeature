@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-07-17
+
 ### Fixed
 
 - **`/compact` redirects to a cheaper model only when the prompt cache is cold.** The redirect
@@ -1186,7 +1188,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/fkiene/llmtrim/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/fkiene/llmtrim/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/fkiene/llmtrim/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/fkiene/llmtrim/compare/v0.10.2...v0.11.0

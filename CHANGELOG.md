@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-07-18
+
 ### Added
 
 - **Status line shows the active `/sub` plan's rate limits (Codex first).** Under a Codex
@@ -1214,7 +1216,8 @@ bill, never a broken call.
   (6 targets with SLSA build provenance), CI on Linux/macOS/Windows with secret
   scanning, license compliance, and MSRV gates.
 
-[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/fkiene/llmtrim/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/fkiene/llmtrim/compare/v0.11.3...v0.11.4
 [0.11.3]: https://github.com/fkiene/llmtrim/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/fkiene/llmtrim/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/fkiene/llmtrim/compare/v0.11.0...v0.11.1

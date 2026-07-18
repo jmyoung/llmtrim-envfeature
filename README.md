@@ -661,14 +661,14 @@ Each failing check names its fix. If a request was mangled, set `LLMTRIM_CAPTURE
 
 If llmtrim saved you money, a ⭐ helps others find it.
 
-## Star history
+## Star History
 
 <a href="https://www.star-history.com/?repos=fkiene%2Fllmtrim&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&legend=top-left" />
-    <img alt="Star history chart for fkiene/llmtrim" src="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&legend=top-left" />
-  </picture>
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&theme=dark&legend=top-left&sealed_token=VOVX6ERnIXuLFh_8dx_fbRmYHXJOvbxcNHkVxrtAZGuud4uK53caprcGzV71GgmmmIcIwVWPkkmrhteOZ9C_xMhjl1h3-OzsXgLTrSv7TinPVNAdqx8X9z1vgkl5aOy9ZQZmJIR5yD-C7wt4FgU6vjIQAKskVuWfmQLCbyT1p2s3EjBwVGx0xRJl2-8C" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&legend=top-left&sealed_token=VOVX6ERnIXuLFh_8dx_fbRmYHXJOvbxcNHkVxrtAZGuud4uK53caprcGzV71GgmmmIcIwVWPkkmrhteOZ9C_xMhjl1h3-OzsXgLTrSv7TinPVNAdqx8X9z1vgkl5aOy9ZQZmJIR5yD-C7wt4FgU6vjIQAKskVuWfmQLCbyT1p2s3EjBwVGx0xRJl2-8C" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fkiene/llmtrim&type=date&legend=top-left&sealed_token=VOVX6ERnIXuLFh_8dx_fbRmYHXJOvbxcNHkVxrtAZGuud4uK53caprcGzV71GgmmmIcIwVWPkkmrhteOZ9C_xMhjl1h3-OzsXgLTrSv7TinPVNAdqx8X9z1vgkl5aOy9ZQZmJIR5yD-C7wt4FgU6vjIQAKskVuWfmQLCbyT1p2s3EjBwVGx0xRJl2-8C" />
+ </picture>
 </a>
 
 ---

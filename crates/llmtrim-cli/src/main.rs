@@ -171,7 +171,7 @@ enum Commands {
         /// Print the environment variables setup would wire, then exit — no profile,
         /// autostart, or daemon changes (the CA is still generated if missing, so the
         /// printed paths are valid).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "force")]
         env: bool,
     },
     /// Bring this machine to the recommended current state

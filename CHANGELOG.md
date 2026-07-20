@@ -9,8 +9,9 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **`llmtrim setup --env` creates CA files (if needed) and prints envvars** When this option is
-  used, setup will create CA files (if required) on non-Windows and print a Bash-compatible
-  evaluatable string which can be used to import environment variables into your session.
+  used, setup ensures the local CA (and, on POSIX, the combined OS-trust bundle) exist, then
+  prints an evaluatable snippet — `export` lines on POSIX, `$env:` assignments on Windows — to
+  wire the interceptor into your current shell.
 
 ## [0.11.4] - 2026-07-18
 

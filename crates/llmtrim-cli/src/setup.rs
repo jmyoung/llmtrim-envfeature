@@ -1582,24 +1582,33 @@ fn env_block(proxy: &str, ca: &str, bundle: Option<&str>, syntax: Syntax) -> Str
     }
 }
 
+/// Escape `s` for a single-quoted PowerShell literal: `'…'`, doubling any embedded `'`.
+#[cfg(windows)]
+fn powershell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
 /// The interceptor env as standalone, ungated shell lines — one `export`/`$env:` assignment
 /// per variable, no `BEGIN`/`END` markers and no `llmtrim _alive` liveness gate (unlike
 /// [`env_block`], this isn't a persisted block that must self-disable when the daemon later
 /// stops; it's a one-shot snippet the caller evals or copies immediately). Shared by `run`'s
 /// "no profile found" fallback and `print_env`, so both always report the same variables.
+/// Values are single-quoted (not `env_block`'s bare double quotes) since this snippet exists
+/// specifically to be `eval`'d.
 fn manual_env_lines(proxy: &str, ca: &str, bundle: Option<&str>) -> Vec<String> {
     #[cfg(not(windows))]
     {
+        use crate::statusline::shell_quote_path as q;
         let mut lines = vec![
-            format!("export HTTPS_PROXY=\"{proxy}\""),
-            format!("export HTTP_PROXY=\"{proxy}\""),
-            format!("export NO_PROXY=\"{NO_PROXY}\""),
-            format!("export no_proxy=\"{NO_PROXY}\""),
-            format!("export NODE_EXTRA_CA_CERTS=\"{ca}\""),
+            format!("export HTTPS_PROXY={}", q(proxy)),
+            format!("export HTTP_PROXY={}", q(proxy)),
+            format!("export NO_PROXY={}", q(NO_PROXY)),
+            format!("export no_proxy={}", q(NO_PROXY)),
+            format!("export NODE_EXTRA_CA_CERTS={}", q(ca)),
         ];
         if let Some(b) = bundle {
-            lines.push(format!("export SSL_CERT_FILE=\"{b}\""));
-            lines.push(format!("export CURL_CA_BUNDLE=\"{b}\""));
+            lines.push(format!("export SSL_CERT_FILE={}", q(b)));
+            lines.push(format!("export CURL_CA_BUNDLE={}", q(b)));
         }
         lines
     }
@@ -1607,10 +1616,10 @@ fn manual_env_lines(proxy: &str, ca: &str, bundle: Option<&str>) -> Vec<String> 
     {
         let _ = bundle; // no combined bundle on Windows — see env_block's PowerShell arm
         vec![
-            format!("$env:HTTPS_PROXY = \"{proxy}\""),
-            format!("$env:HTTP_PROXY = \"{proxy}\""),
-            format!("$env:NO_PROXY = \"{NO_PROXY}\""),
-            format!("$env:NODE_EXTRA_CA_CERTS = \"{ca}\""),
+            format!("$env:HTTPS_PROXY = {}", powershell_quote(proxy)),
+            format!("$env:HTTP_PROXY = {}", powershell_quote(proxy)),
+            format!("$env:NO_PROXY = {}", powershell_quote(NO_PROXY)),
+            format!("$env:NODE_EXTRA_CA_CERTS = {}", powershell_quote(ca)),
         ]
     }
 }
@@ -1625,15 +1634,34 @@ fn manual_env_lines(proxy: &str, ca: &str, bundle: Option<&str>) -> Vec<String> 
 pub fn print_env(requested: Option<u16>) -> Result<()> {
     let running = crate::daemon::running();
     let port = resolve_port(requested, running.as_ref().map(|s| s.port))?;
+    if running.map(|s| s.port) != Some(port) {
+        eprintln!(
+            "{}",
+            ui::warn(
+                ui::color_stderr(),
+                &format!(
+                    "no llmtrim daemon is running on port {port} — start one with \
+                     `llmtrim start --port {port}` before eval'ing this, or HTTPS_PROXY will \
+                     point at a dead port"
+                )
+            )
+        );
+    }
     crate::serve::ensure_ca()?;
     let ca_path = crate::serve::ca_cert_path()?;
     let ca = ca_path.to_string_lossy().into_owned();
     let proxy = format!("http://127.0.0.1:{port}");
     #[cfg(not(windows))]
-    let bundle = ensure_ca_bundle(&ca_path)
-        .ok()
-        .flatten()
-        .map(|p| p.to_string_lossy().into_owned());
+    let bundle = match ensure_ca_bundle(&ca_path) {
+        Ok(b) => b.map(|p| p.to_string_lossy().into_owned()),
+        Err(e) => {
+            eprintln!(
+                "{}",
+                ui::warn(ui::color_stderr(), &format!("CA bundle not built: {e}"))
+            );
+            None
+        }
+    };
     #[cfg(windows)]
     let bundle: Option<String> = None;
     for line in manual_env_lines(&proxy, &ca, bundle.as_deref()) {
@@ -2074,16 +2102,20 @@ mod tests {
     #[test]
     fn manual_env_lines_posix_omits_bundle_vars_when_none() {
         let lines = manual_env_lines("http://127.0.0.1:8787", "/home/u/ca.pem", None);
-        assert!(lines.contains(&"export HTTPS_PROXY=\"http://127.0.0.1:8787\"".to_string()));
-        assert!(lines.contains(&"export HTTP_PROXY=\"http://127.0.0.1:8787\"".to_string()));
-        assert!(lines.contains(&format!("export NO_PROXY=\"{NO_PROXY}\"")));
-        assert!(lines.contains(&format!("export no_proxy=\"{NO_PROXY}\"")));
-        assert!(lines.contains(&"export NODE_EXTRA_CA_CERTS=\"/home/u/ca.pem\"".to_string()));
+        assert!(lines.contains(&"export HTTPS_PROXY='http://127.0.0.1:8787'".to_string()));
+        assert!(lines.contains(&"export HTTP_PROXY='http://127.0.0.1:8787'".to_string()));
+        assert!(lines.contains(&format!("export NO_PROXY='{NO_PROXY}'")));
+        assert!(lines.contains(&format!("export no_proxy='{NO_PROXY}'")));
+        assert!(lines.contains(&"export NODE_EXTRA_CA_CERTS='/home/u/ca.pem'".to_string()));
         assert!(!lines.iter().any(|l| l.contains("SSL_CERT_FILE")));
         assert!(!lines.iter().any(|l| l.contains("CURL_CA_BUNDLE")));
         // Unlike env_block, this is a standalone eval-able snippet: no BEGIN/END markers,
         // no `llmtrim _alive` liveness gate.
-        assert!(!lines.iter().any(|l| l.contains(BEGIN) || l.contains("_alive")));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains(BEGIN) || l.contains("_alive"))
+        );
     }
 
     #[cfg(not(windows))]
@@ -2095,11 +2127,10 @@ mod tests {
             Some("/home/u/.llmtrim/ca-bundle.pem"),
         );
         assert!(
-            lines.contains(&"export SSL_CERT_FILE=\"/home/u/.llmtrim/ca-bundle.pem\"".to_string())
+            lines.contains(&"export SSL_CERT_FILE='/home/u/.llmtrim/ca-bundle.pem'".to_string())
         );
         assert!(
-            lines
-                .contains(&"export CURL_CA_BUNDLE=\"/home/u/.llmtrim/ca-bundle.pem\"".to_string())
+            lines.contains(&"export CURL_CA_BUNDLE='/home/u/.llmtrim/ca-bundle.pem'".to_string())
         );
     }
 
@@ -2111,7 +2142,7 @@ mod tests {
             "C:\\Users\\u\\.llmtrim\\ca.pem",
             Some("C:\\Users\\u\\.llmtrim\\ca-bundle.pem"),
         );
-        assert!(lines.contains(&"$env:HTTPS_PROXY = \"http://127.0.0.1:8787\"".to_string()));
+        assert!(lines.contains(&"$env:HTTPS_PROXY = 'http://127.0.0.1:8787'".to_string()));
         assert!(!lines.iter().any(|l| l.contains("SSL_CERT_FILE")));
         assert!(!lines.iter().any(|l| l.contains("CURL_CA_BUNDLE")));
     }
